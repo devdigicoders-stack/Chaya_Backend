@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Environment Variables
+.env
+.env.local
+.env.production
+
+# Log Files
+*.log
+npm-debug.log*
+
+# Test & Temporary Scripts
+seed.js
+verify_lead.js
+verify_new_rules.js
+
+# OS Files
+.DS_Store
