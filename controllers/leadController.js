@@ -1,14 +1,30 @@
+const mongoose = require('mongoose');
 const Lead = require('../models/Lead');
 const User = require('../models/User');
+const LeadHistory = require('../models/LeadHistory');
 const logLeadHistory = require('../utils/historyLogger');
 
-// Generate unique lead ID (LEAD-1001)
+// Generate unique lead ID (e.g. LEAD-1001)
 const generateLeadId = async () => {
-  const count = await Lead.countDocuments();
-  return `LEAD-${1000 + count + 1}`;
+  const leads = await Lead.find({}, 'leadId').lean();
+  let maxId = 1000;
+  for (const l of leads) {
+    if (l.leadId) {
+      const match = l.leadId.match(/LEAD-(\d+)/);
+      if (match) {
+        const num = parseInt(match[1], 10);
+        if (num > maxId) maxId = num;
+      }
+    }
+  }
+  let nextId = maxId + 1;
+  while (await Lead.exists({ leadId: `LEAD-${nextId}` })) {
+    nextId++;
+  }
+  return `LEAD-${nextId}`;
 };
 
-// @desc    Create / Ingest single or bulk leads
+// @desc    Create / Ingest single lead or array of leads
 // @access  Allowed Roles: ADMIN, DATA_CONTROLLER, CALLING_STAFF, STAFF_HEAD
 // @route   POST /api/leads
 exports.createLeads = async (req, res) => {
@@ -17,22 +33,88 @@ exports.createLeads = async (req, res) => {
     const createdLeads = [];
 
     for (const item of leadsData) {
+      if (!item.candidateName || !item.phone) {
+        continue;
+      }
+
+      // Check duplicate phone if requested
+      const existing = await Lead.findOne({ phone: item.phone.trim() });
+      if (existing && req.body.checkDuplicate) {
+        return res.status(400).json({
+          success: false,
+          message: `Candidate with phone ${item.phone} already exists with ID ${existing.leadId}`
+        });
+      }
+
       const leadIdStr = await generateLeadId();
       
-      // If created by Calling Staff directly, assign to self
-      const assignedCallingStaff = req.user.role === 'CALLING_STAFF' ? req.user._id : (item.assignedCallingStaff || null);
-      const assignedStaffHead = req.user.role === 'CALLING_STAFF' ? (req.user.teamHeadId || null) : (item.assignedStaffHead || null);
+      const assignedCallingStaff = req.user.role === 'CALLING_STAFF' 
+        ? req.user._id 
+        : (item.assignedCallingStaff || null);
+      const assignedStaffHead = req.user.role === 'CALLING_STAFF' 
+        ? (req.user.teamHeadId || null) 
+        : (item.assignedStaffHead || null);
+
+      // Normalize isPassportHolder safely
+      let isPassportHolder = 'NOT_CONFIRMED';
+      if (item.isPassportHolder === true || item.isPassportHolder === 'true' || item.isPassportHolder === 'YES') {
+        isPassportHolder = 'YES';
+      } else if (item.isPassportHolder === false || item.isPassportHolder === 'false' || item.isPassportHolder === 'NO') {
+        isPassportHolder = 'NO';
+      } else if (item.passportNumber) {
+        isPassportHolder = 'YES';
+      }
+
+      // Normalize currentStage safely
+      const validStages = [
+        'UNASSIGNED', 'CALLING_SCREENING', 'INITIAL_INTERVIEW', 'MEDICAL_PROCESS',
+        'FINAL_INTERVIEW', 'ACCOUNTS_COLLECTION', 'STAFF_HEAD_HANDLING',
+        'VACANCY_MATCHING', 'PRE_VISA', 'VISA_PROCESSING', 'VIVA_PLACEMENT',
+        'CANCELLED', 'REJECTED', 'COMPLETED'
+      ];
+      let currentStage = item.currentStage;
+      if (currentStage === 'INITIAL_INTERVIEW_SCHEDULED') currentStage = 'INITIAL_INTERVIEW';
+      if (currentStage === 'MEDICAL_APPOINTMENT_SCHEDULED') currentStage = 'MEDICAL_PROCESS';
+      if (!currentStage || !validStages.includes(currentStage)) {
+        currentStage = assignedCallingStaff ? 'CALLING_SCREENING' : 'UNASSIGNED';
+      }
+
+      const selectionMode = item.selectionMode || 
+        (item.routingOption === 'INTERVIEW' ? 'INTERVIEW' : (item.routingOption === 'DIRECT_CV' || item.routingOption === 'CV' ? 'DIRECT_CV' : 'NONE'));
 
       const lead = await Lead.create({
         leadId: leadIdStr,
-        source: item.source || 'MANUAL',
-        candidateName: item.candidateName,
-        phone: item.phone,
+        source: item.source ? item.source.toUpperCase().replace(/\s+/g, '_') : 'MANUAL',
+        candidateName: item.candidateName.trim(),
+        phone: item.phone.trim(),
+        email: item.email || '',
+        city: item.city || '',
+        state: item.state || '',
+        trade: item.trade || item.applicationForm?.trade || '',
+        notes: item.notes || '',
         passportNumber: item.passportNumber || null,
-        isPassportHolder: item.isPassportHolder || 'NOT_CONFIRMED',
+        isPassportHolder,
+        selectionMode,
         assignedStaffHead,
         assignedCallingStaff,
-        currentStage: assignedCallingStaff ? 'CALLING_SCREENING' : (assignedStaffHead ? 'CALLING_SCREENING' : 'UNASSIGNED')
+        currentStage,
+        applicationForm: {
+          trade: item.trade || item.applicationForm?.trade || '',
+          experienceYears: item.experienceYears || item.applicationForm?.experienceYears || '',
+          preferredCountries: item.preferredCountries || (item.country ? [item.country] : []),
+          expectedSalary: item.expectedSalary || item.applicationForm?.expectedSalary || '',
+          fatherName: item.fatherName || item.applicationForm?.fatherName || '',
+          dob: item.dob || item.applicationForm?.dob || '',
+          gender: item.gender || item.applicationForm?.gender || 'Male',
+          altPhone: item.altPhone || item.applicationForm?.altPhone || '',
+          address: item.address || item.applicationForm?.address || '',
+          city: item.city || item.applicationForm?.city || '',
+          state: item.state || item.applicationForm?.state || '',
+          passportIssueDate: item.passportIssueDate || '',
+          passportExpiry: item.passportExpiry || '',
+          hasPreviousGCC: item.hasPreviousGCC || 'No',
+          previousCountry: item.previousCountry || ''
+        }
       });
 
       await logLeadHistory({
@@ -46,7 +128,225 @@ exports.createLeads = async (req, res) => {
       createdLeads.push(lead);
     }
 
-    res.status(201).json({ success: true, count: createdLeads.length, data: createdLeads });
+    res.status(201).json({
+      success: true,
+      message: `Successfully created ${createdLeads.length} lead(s)`,
+      count: createdLeads.length,
+      data: createdLeads.length === 1 ? createdLeads[0] : createdLeads
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Bulk Import Leads with Duplicate Validation (Excel / WhatsApp / FB)
+// @route   POST /api/leads/bulk-import
+// @access  Private (Admin, Data Controller, Staff Head)
+exports.bulkImportLeads = async (req, res) => {
+  try {
+    const { leads, source, skipDuplicates = true } = req.body;
+
+    if (!leads || !Array.isArray(leads) || leads.length === 0) {
+      return res.status(400).json({ success: false, message: 'Please provide an array of leads to import' });
+    }
+
+    let importedCount = 0;
+    let duplicateCount = 0;
+    const importedLeads = [];
+    const duplicates = [];
+
+    for (const item of leads) {
+      if (!item.candidateName || !item.phone) {
+        continue;
+      }
+
+      const phoneClean = String(item.phone).trim();
+      const existing = await Lead.findOne({ phone: phoneClean });
+
+      if (existing) {
+        duplicateCount++;
+        duplicates.push({ name: item.candidateName, phone: phoneClean, existingId: existing.leadId });
+        if (skipDuplicates) {
+          continue; // Skip duplicate phone
+        }
+      }
+
+      const leadIdStr = await generateLeadId();
+      const isPassportHolder = item.passportNumber 
+        ? 'YES' 
+        : (item.hasPassport === 'Yes' || item.hasPassport === 'YES' ? 'YES' : 'NOT_CONFIRMED');
+
+      const lead = await Lead.create({
+        leadId: leadIdStr,
+        source: source ? source.toUpperCase().replace(/\s+/g, '_') : (item.source || 'EXCEL'),
+        candidateName: item.candidateName.trim(),
+        phone: phoneClean,
+        email: item.email || '',
+        city: item.city || item.state || '',
+        state: item.state || '',
+        trade: item.trade || '',
+        passportNumber: item.passportNumber || null,
+        isPassportHolder,
+        currentStage: 'UNASSIGNED',
+        applicationForm: {
+          trade: item.trade || '',
+          experienceYears: item.experience || item.experienceYears || '',
+          preferredCountries: item.country ? [item.country] : [],
+          expectedSalary: item.expectedSalary || '',
+          city: item.city || '',
+          state: item.state || ''
+        }
+      });
+
+      await logLeadHistory({
+        lead,
+        performedBy: req.user,
+        actionType: 'LEAD_CREATED',
+        toStage: 'UNASSIGNED',
+        remarks: `Bulk imported via ${lead.source} by ${req.user.name}`
+      });
+
+      importedLeads.push(lead);
+      importedCount++;
+    }
+
+    res.json({
+      success: true,
+      message: `Bulk import completed: ${importedCount} imported, ${duplicateCount} duplicates ${skipDuplicates ? 'skipped' : 'found'}`,
+      importedCount,
+      duplicateCount,
+      duplicates,
+      data: importedLeads
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Get single lead by ID with full history audit trail
+// @route   GET /api/leads/:id
+// @access  Private
+exports.getLeadById = async (req, res) => {
+  try {
+    const isObjectId = mongoose.Types.ObjectId.isValid(req.params.id);
+    const query = isObjectId ? { _id: req.params.id } : { leadId: req.params.id };
+    const lead = await Lead.findOne(query)
+      .populate('assignedStaffHead', 'name email phone department')
+      .populate('assignedCallingStaff', 'name email phone department')
+      .populate('assignedInterviewPanel', 'name email phone department')
+      .populate('assignedPreVisaManager', 'name email phone department')
+      .populate('assignedVisaManager', 'name email phone department');
+
+    if (!lead) {
+      return res.status(404).json({ success: false, message: 'Lead not found' });
+    }
+
+    const history = await LeadHistory.find({ lead: lead._id }).sort({ createdAt: -1 });
+
+    res.json({
+      success: true,
+      data: {
+        ...lead.toObject(),
+        history
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Update single lead information & application form
+// @route   PUT /api/leads/:id
+// @access  Private
+exports.updateLead = async (req, res) => {
+  try {
+    const isObjectId = mongoose.Types.ObjectId.isValid(req.params.id);
+    const query = isObjectId ? { _id: req.params.id } : { leadId: req.params.id };
+    const lead = await Lead.findOne(query);
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+    const prevData = lead.toObject();
+
+    // Editable basic fields
+    const {
+      candidateName, phone, email, city, state, trade, notes,
+      passportNumber, isPassportHolder, applicationForm
+    } = req.body;
+
+    if (candidateName) lead.candidateName = candidateName;
+    if (phone) lead.phone = phone;
+    if (email !== undefined) lead.email = email;
+    if (city !== undefined) lead.city = city;
+    if (state !== undefined) lead.state = state;
+    if (trade !== undefined) lead.trade = trade;
+    if (notes !== undefined) lead.notes = notes;
+    if (passportNumber !== undefined) lead.passportNumber = passportNumber;
+    if (isPassportHolder !== undefined) lead.isPassportHolder = isPassportHolder;
+
+    if (applicationForm) {
+      lead.applicationForm = {
+        ...lead.applicationForm,
+        ...applicationForm
+      };
+      if (applicationForm.trade && !lead.trade) {
+        lead.trade = applicationForm.trade;
+      }
+    }
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'APPLICATION_FORM_FILLED',
+      remarks: `Lead details updated by ${req.user.name} (${req.user.role})`,
+      changes: { before: prevData, after: lead.toObject() }
+    });
+
+    res.json({ success: true, message: 'Lead updated successfully', data: lead });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Delete single lead (Admin Only)
+// @route   DELETE /api/leads/:id
+// @access  Private (Admin Only)
+exports.deleteLead = async (req, res) => {
+  try {
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+    await LeadHistory.deleteMany({ lead: lead._id });
+    await Lead.findByIdAndDelete(req.params.id);
+
+    res.json({ success: true, message: `Lead ${lead.leadId} deleted successfully` });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Toggle Lead Hold Status
+// @route   PUT /api/leads/:id/hold
+// @access  Private
+exports.toggleLeadHold = async (req, res) => {
+  try {
+    const { isHold, reason } = req.body;
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+    lead.isHold = isHold !== undefined ? isHold : !lead.isHold;
+    lead.holdReason = reason || (lead.isHold ? 'Put on hold by user' : '');
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'HOLD_STATUS_CHANGED',
+      remarks: `Lead hold status changed to ${lead.isHold ? 'ON HOLD' : 'ACTIVE'}. Reason: ${lead.holdReason}`
+    });
+
+    res.json({ success: true, message: `Lead hold status updated`, data: lead });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -90,7 +390,7 @@ exports.assignLeadsToCallingStaff = async (req, res) => {
         actionType: 'LEAD_ASSIGNED',
         fromStage: prevStage,
         toStage: 'CALLING_SCREENING',
-        remarks: `Manually assigned lead to Calling Staff: ${callingStaffUser.name}`
+        remarks: `Assigned lead to Calling Staff: ${callingStaffUser.name}`
       });
 
       updatedLeads.push(lead);
@@ -148,7 +448,7 @@ exports.categorizeLead = async (req, res) => {
 // @access  Private
 exports.transferLeadStage = async (req, res) => {
   try {
-    const { fromStage, toStage, completedChecklist, selectionMode, remarks } = req.body;
+    const { fromStage, toStage, completedChecklist, selectionMode, remarks, fileType } = req.body;
     const lead = await Lead.findById(req.params.id);
 
     if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
@@ -160,6 +460,12 @@ exports.transferLeadStage = async (req, res) => {
       lead.selectionMode = selectionMode;
     }
 
+    if (fileType) {
+      lead.fileType = fileType;
+    } else if (toStage === 'PRE_VISA' && (!lead.fileType || lead.fileType === 'NOT_SET')) {
+      lead.fileType = 'DIRECT_FILE'; // Transferred directly to Pre-Viva stage (FRD Section 14)
+    }
+
     await lead.save();
 
     await logLeadHistory({
@@ -169,7 +475,7 @@ exports.transferLeadStage = async (req, res) => {
       fromStage: prevStage,
       toStage: toStage,
       completedChecklist: completedChecklist || [],
-      remarks: remarks || `Transferred stage from ${prevStage} to ${toStage}`
+      remarks: remarks || `Transferred stage from ${prevStage} to ${toStage}${lead.fileType !== 'NOT_SET' ? ` (${lead.fileType})` : ''}`
     });
 
     res.json({ success: true, message: `Lead transferred to ${toStage}`, data: lead });
@@ -178,17 +484,35 @@ exports.transferLeadStage = async (req, res) => {
   }
 };
 
-// @desc    Update Location Confirmation (Max 4 Attempts allowed)
+// @desc    Update Location Confirmation (Max 4 Attempts allowed, moves to Pre-Viva when confirmed or CANCELLED)
 // @route   PUT /api/leads/:id/location-confirmation
 // @access  Private
 exports.updateLocationConfirmation = async (req, res) => {
   try {
-    const { confirmedLocation, isConfirmed } = req.body;
+    const { confirmedLocation, isConfirmed, isCancelled, cancellationReason } = req.body;
     const lead = await Lead.findById(req.params.id);
 
     if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
-    if (lead.locationConfirmation.editCount >= 4) {
+    // Handle cancellation by candidate (FRD Section 13)
+    if (isCancelled) {
+      const prevStage = lead.currentStage;
+      lead.currentStage = 'CANCELLED';
+      await lead.save();
+
+      await logLeadHistory({
+        lead,
+        performedBy: req.user,
+        actionType: 'STAGE_TRANSFERRED',
+        fromStage: prevStage,
+        toStage: 'CANCELLED',
+        remarks: `Candidate cancelled location confirmation. Reason: ${cancellationReason || 'Candidate withdrawn'}`
+      });
+
+      return res.json({ success: true, message: 'Lead marked as CANCELLED per candidate request', data: lead });
+    }
+
+    if (lead.locationConfirmation.editCount >= 4 && !isConfirmed) {
       lead.currentStage = 'CANCELLED';
       await lead.save();
 
@@ -206,103 +530,431 @@ exports.updateLocationConfirmation = async (req, res) => {
       });
     }
 
-    lead.locationConfirmation.confirmedLocation = confirmedLocation;
-    lead.locationConfirmation.isConfirmed = isConfirmed;
-    lead.locationConfirmation.editCount += 1;
+    if (confirmedLocation !== undefined && confirmedLocation !== '') {
+      lead.locationConfirmation.confirmedLocation = confirmedLocation;
+    }
+
+    if (isConfirmed) {
+      lead.locationConfirmation.isConfirmed = true;
+      lead.currentStage = 'PRE_VISA';
+      lead.fileType = 'MOVE_FILE';
+
+      await logLeadHistory({
+        lead,
+        performedBy: req.user,
+        actionType: 'STAGE_TRANSFERRED',
+        fromStage: lead.currentStage,
+        toStage: 'PRE_VISA',
+        remarks: `Location confirmed as "${lead.locationConfirmation.confirmedLocation}". File forwarded to Pre-Viva Manager as MOVE FILE.`
+      });
+    } else {
+      lead.locationConfirmation.editCount += 1;
+      await logLeadHistory({
+        lead,
+        performedBy: req.user,
+        actionType: 'LOCATION_EDITED',
+        remarks: `Location change attempt #${lead.locationConfirmation.editCount}: ${lead.locationConfirmation.confirmedLocation || confirmedLocation}`
+      });
+    }
 
     await lead.save();
 
-    await logLeadHistory({
-      lead,
-      performedBy: req.user,
-      actionType: 'LOCATION_EDITED',
-      remarks: `Location edit attempt #${lead.locationConfirmation.editCount}: ${confirmedLocation}, Confirmed: ${isConfirmed}`
+    res.json({
+      success: true,
+      message: isConfirmed ? 'Location confirmed and forwarded to Pre-Viva Manager' : `Location updated (Attempt #${lead.locationConfirmation.editCount})`,
+      data: lead
     });
-
-    res.json({ success: true, message: 'Location updated', data: lead });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// @desc    Get all leads with filtering & Admin Full Access Analytics
+// @desc    Get all leads with filtering & Admin Full Access
 // @route   GET /api/leads
 // @access  Private
 exports.getLeads = async (req, res) => {
   try {
-    const { stage, source, isPassportHolder, isHold, search } = req.query;
-    let query = {};
+    const { stage, status, source, isPassportHolder, isHold, search, callingStaff, medicalDesk, medicalStatus, preVisaDesk, preVivaStatus, visaDesk, visaStatus, placementDesk, placementStatus, cancelledDesk, blacklistedDesk } = req.query;
+    const conditions = [];
 
-    // ADMIN & DATA CONTROLLER HAVE FULL ACCESS TO ALL LEADS
-    if (req.user.role === 'ADMIN' || req.user.role === 'DATA_CONTROLLER') {
-      if (stage) query.currentStage = stage;
-      if (source) query.source = source;
-      if (isPassportHolder) query.isPassportHolder = isPassportHolder;
-      if (isHold) query.isHold = isHold === 'true';
-    } else if (req.user.role === 'STAFF_HEAD') {
-      query.assignedStaffHead = req.user._id;
-      if (stage) query.currentStage = stage;
+    // Role-based scoping
+    if (req.user.role === 'STAFF_HEAD') {
+      const callingStaffUnderHead = await User.find({ teamHeadId: req.user._id }).select('_id');
+      let staffIds = callingStaffUnderHead.map(u => u._id);
+      if (staffIds.length === 0) {
+        const allCalling = await User.find({ role: 'CALLING_STAFF' }).select('_id');
+        staffIds = allCalling.map(u => u._id);
+      }
+
+      if (stage === 'UNASSIGNED') {
+        conditions.push({
+          $or: [
+            { currentStage: 'UNASSIGNED' },
+            { assignedCallingStaff: null }
+          ]
+        });
+      } else if (stage === 'ALL' || req.query.allPool === 'true') {
+        // Staff Head full lead pool visibility
+      } else if (stage) {
+        conditions.push({ currentStage: stage });
+      } else {
+        // Default Staff Head view: all operational pool leads
+      }
     } else if (req.user.role === 'CALLING_STAFF') {
-      query.assignedCallingStaff = req.user._id;
-      if (stage) query.currentStage = stage;
+      conditions.push({ assignedCallingStaff: req.user._id });
     } else if (req.user.role === 'INTERVIEW_PANEL') {
-      query.currentStage = 'INITIAL_INTERVIEW';
+      conditions.push({ currentStage: 'INITIAL_INTERVIEW' });
     } else if (req.user.role === 'MEDICAL_DEPT') {
-      query.currentStage = 'MEDICAL_PROCESS';
+      conditions.push({ currentStage: 'MEDICAL_PROCESS' });
     } else if (req.user.role === 'ACCOUNTS') {
-      query.currentStage = 'ACCOUNTS_COLLECTION';
+      conditions.push({ currentStage: 'ACCOUNTS_COLLECTION' });
     } else if (req.user.role === 'PRE_VISA_MANAGER') {
-      query.currentStage = 'PRE_VISA';
+      conditions.push({ currentStage: 'PRE_VISA' });
     } else if (req.user.role === 'VISA_MANAGER') {
-      query.currentStage = 'VISA_PROCESSING';
+      conditions.push({ currentStage: 'VISA_PROCESSING' });
+    } else if (req.user.role === 'VIVA_MANAGER') {
+      conditions.push({ 
+        $or: [
+          { currentStage: { $in: ['VIVA_PLACEMENT', 'FINAL_INTERVIEW', 'COMPLETED'] } },
+          { 'visaDetails.status': 'APPROVED' }
+        ]
+      });
+    }
+    // Note: ADMIN and DATA_CONTROLLER have global view across all leads
+
+    // Common query filters
+    if (placementDesk === 'true') {
+      conditions.push({
+        $or: [
+          { currentStage: { $in: ['VIVA_PLACEMENT', 'FINAL_INTERVIEW', 'COMPLETED'] } },
+          { 'visaDetails.status': 'APPROVED' },
+          { 'placementDetails.vivaSchedule.status': { $in: ['SCHEDULED', 'RESCHEDULED', 'COMPLETED'] } },
+          { 'placementDetails.vivaResult.status': { $in: ['SELECTED', 'ON_HOLD', 'NOT_SELECTED'] } },
+          { 'placementDetails.offerLetter.status': { $in: ['DRAFT', 'SENT', 'ACCEPTED', 'REJECTED'] } },
+          { 'placementDetails.deployment.status': { $in: ['PENDING_TICKET', 'FLIGHT_BOOKED', 'DEPARTED', 'JOINED_ON_SITE'] } }
+        ]
+      });
+    } else if (visaDesk === 'true') {
+      conditions.push({
+        $or: [
+          { currentStage: 'VISA_PROCESSING' },
+          { 'visaDetails.status': { $in: ['READY_TO_APPLY', 'SUBMITTED', 'PROCESSING', 'APPROVED', 'DELAYED', 'REJECTED'] } },
+          { 'visaDetails.applicationNumber': { $exists: true, $ne: '' } },
+          { 'preVivaDetails.status': 'CLEARED' },
+          { 'visaDetails.isDateAssigned': true }
+        ]
+      });
+    } else if (preVisaDesk === 'true') {
+      conditions.push({
+        $or: [
+          { currentStage: 'PRE_VISA' },
+          { fileType: { $in: ['MOVE_FILE', 'DIRECT_FILE'] } },
+          { 'locationConfirmation.isConfirmed': true },
+          { 'visaDetails.isDateAssigned': true },
+          { 'visaDetails.revisionRequest.isPending': true },
+          { 'preVivaDetails.documentsVerified': true }
+        ]
+      });
+    } else if (medicalDesk === 'true') {
+      conditions.push({
+        $or: [
+          { currentStage: 'MEDICAL_PROCESS' },
+          { 'medicalDetails.status': { $in: ['SCHEDULED', 'FIT', 'UNFIT'] } },
+          { selectionMode: 'DIRECT_CV' },
+          { 'initialInterview.status': 'PASS' }
+        ]
+      });
+    } else if (cancelledDesk === 'true') {
+      conditions.push({
+        $or: [
+          { currentStage: 'CANCELLED' },
+          { 'placementDetails.vivaSchedule.status': 'CANCELLED' },
+          { holdReason: { $regex: /cancel/i } }
+        ]
+      });
+    } else if (blacklistedDesk === 'true') {
+      conditions.push({
+        $or: [
+          { currentStage: 'REJECTED' },
+          { 'medicalDetails.status': 'UNFIT' },
+          { 'initialInterview.status': 'FAIL' },
+          { 'placementDetails.vivaResult.status': 'NOT_SELECTED' },
+          { isHold: true },
+          { holdReason: { $regex: /unfit|blacklist|reject|fake|forged/i } }
+        ]
+      });
+    } else if (stage && stage !== 'ALL' && stage !== 'UNASSIGNED') {
+      conditions.push({ currentStage: stage });
+    }
+    if (status && status !== 'ALL') {
+      if (status === 'CANCELLED') {
+        conditions.push({
+          $or: [
+            { currentStage: 'CANCELLED' },
+            { holdReason: { $regex: /cancel/i } }
+          ]
+        });
+      } else if (status === 'UNFIT') {
+        conditions.push({
+          $or: [
+            { 'medicalDetails.status': 'UNFIT' },
+            { currentStage: 'REJECTED' },
+            { holdReason: { $regex: /unfit/i } }
+          ]
+        });
+      } else if (status === 'REJECTED') {
+        conditions.push({
+          $or: [
+            { currentStage: 'REJECTED' },
+            { 'initialInterview.status': 'FAIL' },
+            { 'placementDetails.vivaResult.status': 'NOT_SELECTED' }
+          ]
+        });
+      }
+    }
+    if (visaStatus && visaStatus !== 'ALL') {
+      conditions.push({ 'visaDetails.status': visaStatus });
+    }
+    if (preVivaStatus && preVivaStatus !== 'ALL') {
+      conditions.push({ 'preVivaDetails.status': preVivaStatus });
+    }
+    if (medicalStatus && medicalStatus !== 'ALL') {
+      conditions.push({ 'medicalDetails.status': medicalStatus });
+    }
+    if (source && source !== 'ALL') {
+      conditions.push({ source: source.toUpperCase() });
+    }
+    if (isPassportHolder && isPassportHolder !== 'ALL') {
+      conditions.push({ isPassportHolder });
+    }
+    if (isHold !== undefined && isHold !== 'ALL') {
+      conditions.push({ isHold: isHold === 'true' });
+    }
+    if (callingStaff && callingStaff !== 'ALL') {
+      if (callingStaff === 'UNASSIGNED') {
+        conditions.push({ assignedCallingStaff: null });
+      } else {
+        conditions.push({ assignedCallingStaff: callingStaff });
+      }
+    }
+    if (search && search.trim()) {
+      const s = search.trim();
+      conditions.push({
+        $or: [
+          { candidateName: { $regex: s, $options: 'i' } },
+          { phone: { $regex: s, $options: 'i' } },
+          { passportNumber: { $regex: s, $options: 'i' } },
+          { leadId: { $regex: s, $options: 'i' } },
+          { trade: { $regex: s, $options: 'i' } },
+          { city: { $regex: s, $options: 'i' } }
+        ]
+      });
     }
 
-    if (search) {
-      query.$or = [
-        { candidateName: { $regex: search, $options: 'i' } },
-        { phone: { $regex: search, $options: 'i' } },
-        { passportNumber: { $regex: search, $options: 'i' } },
-        { leadId: { $regex: search, $options: 'i' } }
-      ];
-    }
+    const query = conditions.length > 0 ? { $and: conditions } : {};
 
     const leads = await Lead.find(query)
-      .populate('assignedStaffHead', 'name email phone')
-      .populate('assignedCallingStaff', 'name email phone')
+      .populate('assignedStaffHead', 'name email phone department')
+      .populate('assignedCallingStaff', 'name email phone department')
+      .populate('assignedVisaManager', 'name email phone department')
+      .populate('assignedPreVisaManager', 'name email phone department')
       .sort({ createdAt: -1 });
 
-    res.json({ success: true, count: leads.length, data: leads });
+    // Compute quick stats for UI
+    const totalLeads = await Lead.countDocuments();
+    const inCallingCount = await Lead.countDocuments({ currentStage: 'CALLING_SCREENING' });
+    const passportHoldersCount = await Lead.countDocuments({ isPassportHolder: 'YES' });
+    const holdCount = await Lead.countDocuments({ isHold: true });
+    const unassignedCount = await Lead.countDocuments({ currentStage: 'UNASSIGNED' });
+    const cancelledCount = await Lead.countDocuments({
+      $or: [
+        { currentStage: 'CANCELLED' },
+        { holdReason: { $regex: /cancel/i } }
+      ]
+    });
+    const unfitCount = await Lead.countDocuments({
+      $or: [
+        { currentStage: 'REJECTED' },
+        { 'medicalDetails.status': 'UNFIT' },
+        { 'initialInterview.status': 'FAIL' },
+        { 'placementDetails.vivaResult.status': 'NOT_SELECTED' }
+      ]
+    });
+
+    res.json({
+      success: true,
+      count: leads.length,
+      stats: {
+        total: totalLeads,
+        inCalling: inCallingCount,
+        passportHolders: passportHoldersCount,
+        onHold: holdCount,
+        unassigned: unassignedCount,
+        cancelled: cancelledCount,
+        unfit: unfitCount
+      },
+      data: leads
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// @desc    Get Lead Dashboard Analytics for Admin (Count by Status & Stage)
+// @desc    Get Lead Dashboard Analytics for Admin & Staff Head
 // @route   GET /api/leads/admin/dashboard-summary
-// @access  Private (Admin & Data Controller Only)
+// @access  Private (Admin, Data Controller, Staff Head)
 exports.getAdminDashboardSummary = async (req, res) => {
   try {
-    const totalLeads = await Lead.countDocuments();
+    // Full CRM operations visibility for Admin, Data Controller, and Staff Head (Lead Operations Head)
+    let matchFilter = {};
+
+    if (req.query.period && req.query.period !== 'All Time') {
+      const p = req.query.period.trim();
+      const now = new Date();
+      if (p === 'Today') {
+        const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        matchFilter.createdAt = { $gte: start };
+      } else if (p === 'This Week') {
+        const day = now.getDay();
+        const diff = now.getDate() - day + (day === 0 ? -6 : 1);
+        const start = new Date(now.getFullYear(), now.getMonth(), diff);
+        start.setHours(0, 0, 0, 0);
+        matchFilter.createdAt = { $gte: start };
+      } else if (p === 'This Month') {
+        const start = new Date(now.getFullYear(), now.getMonth(), 1);
+        matchFilter.createdAt = { $gte: start };
+      } else if (p === 'This Quarter') {
+        const quarterMonth = Math.floor(now.getMonth() / 3) * 3;
+        const start = new Date(now.getFullYear(), quarterMonth, 1);
+        matchFilter.createdAt = { $gte: start };
+      } else if (p === 'This Year') {
+        const start = new Date(now.getFullYear(), 0, 1);
+        matchFilter.createdAt = { $gte: start };
+      }
+    }
+
+    const matchStage = Object.keys(matchFilter).length > 0 ? [{ $match: matchFilter }] : [];
+    const totalLeads = await Lead.countDocuments(matchFilter);
     
-    const stageSummary = await Lead.aggregate([
-      { $group: { _id: '$currentStage', count: { $sum: 1 } } }
+    const [
+      stageSummary,
+      passportSummary,
+      sourceSummary,
+      fileTypeSummary,
+      paymentSummary,
+      medicalSummary,
+      interviewSummary,
+      visaSummary,
+      vivaSummary,
+      holdCount,
+      completedCount,
+      cancelledCount,
+      assignedLeadsCount,
+      unassignedLeadsCount,
+      contactedLeadsCount,
+      postMedicalCount
+    ] = await Promise.all([
+      Lead.aggregate([...matchStage, { $group: { _id: '$currentStage', count: { $sum: 1 } } }]),
+      Lead.aggregate([...matchStage, { $group: { _id: '$isPassportHolder', count: { $sum: 1 } } }]),
+      Lead.aggregate([...matchStage, { $group: { _id: '$source', count: { $sum: 1 } } }]),
+      Lead.aggregate([...matchStage, { $group: { _id: '$fileType', count: { $sum: 1 } } }]),
+      Lead.aggregate([
+        ...matchStage,
+        {
+          $group: {
+            _id: null,
+            totalServiceFee: { $sum: '$paymentDetails.serviceFee' },
+            totalServicePaid: { $sum: '$paymentDetails.servicePaid' },
+            totalMedicalFee: { $sum: '$paymentDetails.medicalFee' },
+            totalMedicalPaid: { $sum: '$paymentDetails.medicalPaid' },
+            totalCollected: { $sum: '$paymentDetails.totalPaid' },
+            fullPaid: { $sum: { $cond: [{ $eq: ['$paymentDetails.paymentStatus', 'FULL'] }, 1, 0] } },
+            partialPaid: { $sum: { $cond: [{ $eq: ['$paymentDetails.paymentStatus', 'PARTIAL'] }, 1, 0] } },
+            unpaid: { $sum: { $cond: [{ $eq: ['$paymentDetails.paymentStatus', 'UNPAID'] }, 1, 0] } }
+          }
+        }
+      ]),
+      Lead.aggregate([...matchStage, { $group: { _id: '$medicalDetails.status', count: { $sum: 1 } } }]),
+      Lead.aggregate([...matchStage, { $group: { _id: '$initialInterview.status', count: { $sum: 1 } } }]),
+      Lead.aggregate([...matchStage, { $group: { _id: '$visaDetails.status', count: { $sum: 1 } } }]),
+      Lead.aggregate([...matchStage, { $group: { _id: '$placementDetails.vivaResult.status', count: { $sum: 1 } } }]),
+      Lead.countDocuments({ ...matchFilter, isHold: true }),
+      Lead.countDocuments({ ...matchFilter, currentStage: 'COMPLETED' }),
+      Lead.countDocuments({ ...matchFilter, currentStage: 'CANCELLED' }),
+      Lead.countDocuments({ ...matchFilter, assignedCallingStaff: { $ne: null }, currentStage: { $ne: 'UNASSIGNED' } }),
+      Lead.countDocuments({ ...matchFilter, $or: [{ assignedCallingStaff: null }, { currentStage: 'UNASSIGNED' }] }),
+      Lead.countDocuments({ ...matchFilter, isPassportHolder: { $in: ['YES', 'NO'] } }),
+      Lead.countDocuments({ ...matchFilter, $or: [{ currentStage: 'STAFF_HEAD_HANDLING' }, { 'medicalDetails.status': 'FIT' }] })
     ]);
 
-    const passportSummary = await Lead.aggregate([
-      { $group: { _id: '$isPassportHolder', count: { $sum: 1 } } }
-    ]);
+    const fin = paymentSummary[0] || {};
+    const totalRequired = (fin.totalServiceFee || 0) + (fin.totalMedicalFee || 0);
+    const totalCollected = fin.totalCollected || 0;
+    const totalPending = Math.max(0, totalRequired - totalCollected);
 
-    const sourceSummary = await Lead.aggregate([
-      { $group: { _id: '$source', count: { $sum: 1 } } }
-    ]);
+    // Team Calling Performance calculation for Staff Head & Admin
+    let teamPerformance = [];
+    if (req.user.role === 'STAFF_HEAD' || req.user.role === 'ADMIN') {
+      const queryHead = req.user.role === 'STAFF_HEAD' ? { teamHeadId: req.user._id, role: 'CALLING_STAFF' } : { role: 'CALLING_STAFF' };
+      let staffList = await User.find(queryHead).select('name email phone avatar department');
+      if (staffList.length === 0 && req.user.role === 'STAFF_HEAD') {
+        staffList = await User.find({ role: 'CALLING_STAFF' }).select('name email phone avatar department');
+      }
+
+      for (const staff of staffList) {
+        const assignedCount = await Lead.countDocuments({ assignedCallingStaff: staff._id });
+        const contactedCount = await Lead.countDocuments({
+          assignedCallingStaff: staff._id,
+          isPassportHolder: { $in: ['YES', 'NO'] }
+        });
+        const pct = assignedCount > 0 ? Math.round((contactedCount / assignedCount) * 100) : 0;
+        teamPerformance.push({
+          id: staff._id,
+          name: staff.name,
+          email: staff.email,
+          phone: staff.phone,
+          avatar: staff.avatar || '',
+          assignedCount,
+          contactedCount,
+          percentage: pct
+        });
+      }
+    }
 
     res.json({
       success: true,
       data: {
         totalLeads,
-        byStage: stageSummary.reduce((acc, curr) => ({ ...acc, [curr._id]: curr.count }), {}),
-        byPassport: passportSummary.reduce((acc, curr) => ({ ...acc, [curr._id]: curr.count }), {}),
-        bySource: sourceSummary.reduce((acc, curr) => ({ ...acc, [curr._id]: curr.count }), {})
+        byStage: stageSummary.reduce((acc, curr) => ({ ...acc, [curr._id || 'UNKNOWN']: curr.count }), {}),
+        byPassport: passportSummary.reduce((acc, curr) => ({ ...acc, [curr._id || 'UNKNOWN']: curr.count }), {}),
+        bySource: sourceSummary.reduce((acc, curr) => ({ ...acc, [curr._id || 'UNKNOWN']: curr.count }), {}),
+        byFileType: fileTypeSummary.reduce((acc, curr) => ({ ...acc, [curr._id || 'NOT_SET']: curr.count }), {}),
+        medicalSummary: medicalSummary.reduce((acc, curr) => ({ ...acc, [curr._id || 'PENDING']: curr.count }), {}),
+        interviewSummary: interviewSummary.reduce((acc, curr) => ({ ...acc, [curr._id || 'PENDING']: curr.count }), {}),
+        visaSummary: visaSummary.reduce((acc, curr) => ({ ...acc, [curr._id || 'READY_TO_APPLY']: curr.count }), {}),
+        vivaSummary: vivaSummary.reduce((acc, curr) => ({ ...acc, [curr._id || 'PENDING']: curr.count }), {}),
+        financials: {
+          totalServiceFee: fin.totalServiceFee || 0,
+          totalServicePaid: fin.totalServicePaid || 0,
+          totalMedicalFee: fin.totalMedicalFee || 0,
+          totalMedicalPaid: fin.totalMedicalPaid || 0,
+          totalCollected,
+          totalPending,
+          fullPaidCount: fin.fullPaid || 0,
+          partialPaidCount: fin.partialPaid || 0,
+          unpaidCount: fin.unpaid || 0
+        },
+        counts: {
+          totalOnHold: holdCount,
+          totalCompleted: completedCount,
+          totalCancelled: cancelledCount,
+          activePipelineCount: Math.max(0, totalLeads - completedCount - cancelledCount),
+          assignedLeads: assignedLeadsCount,
+          unassignedLeads: unassignedLeadsCount,
+          contactedLeads: contactedLeadsCount,
+          postMedicalCount
+        },
+        teamPerformance
       }
     });
   } catch (error) {
@@ -336,3 +988,1183 @@ exports.adminLeadOverride = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
+// @desc    Equal / Round-Robin Lead Distribution across Calling Staff (FRD Section 6)
+// @route   POST /api/leads/distribute-round-robin
+// @access  Private (Staff Head / Admin)
+exports.distributeLeadsRoundRobin = async (req, res) => {
+  try {
+    const { leadIds, callingStaffIds } = req.body;
+
+    if (!leadIds || !Array.isArray(leadIds) || leadIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'Please provide leadIds array to distribute' });
+    }
+
+    if (!callingStaffIds || !Array.isArray(callingStaffIds) || callingStaffIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'Please provide callingStaffIds array for distribution' });
+    }
+
+    // Verify all calling staff
+    const staffMembers = await User.find({ _id: { $in: callingStaffIds }, role: 'CALLING_STAFF' });
+    if (staffMembers.length === 0) {
+      return res.status(400).json({ success: false, message: 'No valid Calling Staff members found for distribution' });
+    }
+
+    const leads = await Lead.find({ _id: { $in: leadIds } });
+    const distributionResult = {};
+    staffMembers.forEach(s => { distributionResult[s._id.toString()] = { staff: s, count: 0 }; });
+
+    for (let i = 0; i < leads.length; i++) {
+      const lead = leads[i];
+      const assignedStaff = staffMembers[i % staffMembers.length];
+      const prevStage = lead.currentStage;
+
+      lead.assignedCallingStaff = assignedStaff._id;
+      if (req.user.role === 'STAFF_HEAD') {
+        lead.assignedStaffHead = req.user._id;
+      }
+      lead.currentStage = 'CALLING_SCREENING';
+      await lead.save();
+
+      await logLeadHistory({
+        lead,
+        performedBy: req.user,
+        actionType: 'LEAD_ASSIGNED',
+        fromStage: prevStage,
+        toStage: 'CALLING_SCREENING',
+        remarks: `Round-robin assigned to Calling Staff: ${assignedStaff.name}`
+      });
+
+      distributionResult[assignedStaff._id.toString()].count++;
+    }
+
+    res.json({
+      success: true,
+      message: `Successfully distributed ${leads.length} leads equally across ${staffMembers.length} Calling Staff`,
+      distribution: Object.values(distributionResult).map(d => ({
+        staffId: d.staff._id,
+        staffName: d.staff.name,
+        assignedCount: d.count
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Swap / Reassign Calling Staff with mandatory audit log (FRD Section 12)
+// @route   PUT /api/leads/:id/reassign-staff
+// @access  Private (Staff Head / Admin)
+exports.reassignLeadCallingStaff = async (req, res) => {
+  try {
+    const { newCallingStaffId, reason, newStage } = req.body;
+    const isObjectId = mongoose.Types.ObjectId.isValid(req.params.id);
+    const query = isObjectId ? { _id: req.params.id } : { leadId: req.params.id };
+    const lead = await Lead.findOne(query)
+      .populate('assignedCallingStaff', 'name email phone');
+
+    if (!lead) return res.status(404).json({ success: false, message: 'Candidate lead not found' });
+
+    if (!newCallingStaffId) {
+      return res.status(400).json({ success: false, message: 'Please select new Calling Staff' });
+    }
+
+    const newStaff = await User.findById(newCallingStaffId);
+    if (!newStaff || newStaff.role !== 'CALLING_STAFF') {
+      return res.status(400).json({ success: false, message: 'Invalid Calling Staff selected' });
+    }
+
+    const oldStaffName = lead.assignedCallingStaff?.name || 'Unassigned';
+    const oldStaffId = lead.assignedCallingStaff?._id || null;
+    const prevStage = lead.currentStage;
+
+    lead.assignedCallingStaff = newStaff._id;
+    if (req.user.role === 'STAFF_HEAD') {
+      lead.assignedStaffHead = req.user._id;
+    }
+    if (newStage) {
+      lead.currentStage = newStage;
+    }
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'LEAD_SWAPPED',
+      fromStage: prevStage,
+      toStage: lead.currentStage,
+      remarks: `Calling Staff swapped from ${oldStaffName} to ${newStaff.name}. Reason: ${reason || 'Staff Head Reassignment'}`,
+      changes: {
+        previousCallingStaff: { id: oldStaffId, name: oldStaffName },
+        newCallingStaff: { id: newStaff._id, name: newStaff.name },
+        reason: reason || 'Post-Medical Verification & Allocation'
+      }
+    });
+
+    res.json({
+      success: true,
+      message: `Candidate swapped to ${newStaff.name} successfully`,
+      data: lead
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Bulk Swap / Reassign Calling Staff with mandatory audit log (FRD Section 12)
+// @route   POST /api/leads/bulk-reassign-staff
+// @access  Private (Staff Head / Admin)
+exports.bulkReassignCallingStaff = async (req, res) => {
+  try {
+    const { leadIds, newCallingStaffId, reason } = req.body;
+    if (!leadIds || !Array.isArray(leadIds) || leadIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'Please provide leadIds array' });
+    }
+    if (!newCallingStaffId) {
+      return res.status(400).json({ success: false, message: 'Please select new Calling Staff' });
+    }
+
+    const newStaff = await User.findById(newCallingStaffId);
+    if (!newStaff || newStaff.role !== 'CALLING_STAFF') {
+      return res.status(400).json({ success: false, message: 'Invalid Calling Staff selected' });
+    }
+
+    const leads = await Lead.find({ _id: { $in: leadIds } }).populate('assignedCallingStaff', 'name email phone');
+    const updated = [];
+
+    for (const lead of leads) {
+      const oldStaffName = lead.assignedCallingStaff?.name || 'Unassigned';
+      const oldStaffId = lead.assignedCallingStaff?._id || null;
+      const prevStage = lead.currentStage;
+
+      lead.assignedCallingStaff = newStaff._id;
+      if (req.user.role === 'STAFF_HEAD') {
+        lead.assignedStaffHead = req.user._id;
+      }
+      await lead.save();
+
+      await logLeadHistory({
+        lead,
+        performedBy: req.user,
+        actionType: 'LEAD_SWAPPED',
+        fromStage: prevStage,
+        toStage: lead.currentStage,
+        remarks: `Bulk Calling Staff swapped from ${oldStaffName} to ${newStaff.name}. Reason: ${reason || 'Staff Head Reassignment'}`,
+        changes: {
+          previousCallingStaff: { id: oldStaffId, name: oldStaffName },
+          newCallingStaff: { id: newStaff._id, name: newStaff.name },
+          reason: reason || 'Post-Medical Verification & Allocation'
+        }
+      });
+      updated.push(lead);
+    }
+
+    res.json({
+      success: true,
+      message: `Successfully reassigned ${updated.length} candidate(s) to ${newStaff.name}`,
+      count: updated.length,
+      data: updated
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Record Interview Result (Initial / Final) per FRD Section 10
+// @route   PUT /api/leads/:id/interview-result
+// @access  Private (Interview Panel, Admin, Staff Head)
+exports.submitInterviewResult = async (req, res) => {
+  try {
+    const { interviewType = 'INITIAL', status, remarks, interviewDate, interviewerName } = req.body;
+    const lead = await Lead.findById(req.params.id);
+
+    if (!lead) return res.status(404).json({ success: false, message: 'Candidate lead not found' });
+
+    const prevStage = lead.currentStage;
+
+    if (interviewType === 'INITIAL') {
+      lead.initialInterview.status = status; // PASS or FAIL
+      lead.initialInterview.remarks = remarks || '';
+      lead.initialInterview.updatedAt = new Date();
+
+      if (status === 'PASS') {
+        // FRD Section 10: "Only PASS candidates proceed to Medical from the interview route."
+        lead.currentStage = 'MEDICAL_PROCESS';
+      } else if (status === 'FAIL') {
+        // FAIL candidates remain closed/rejected or in a follow-up status
+        lead.currentStage = 'REJECTED';
+      }
+
+      await lead.save();
+
+      await logLeadHistory({
+        lead,
+        performedBy: req.user,
+        actionType: 'INITIAL_INTERVIEW_RESULT',
+        fromStage: prevStage,
+        toStage: lead.currentStage,
+        remarks: `Initial Interview result: ${status}. Remarks: ${remarks || 'None'}. Evaluated by: ${interviewerName || req.user.name}`
+      });
+
+    } else if (interviewType === 'FINAL') {
+      lead.finalInterview.status = status; // CONFIRMED or NOT_CONFIRMED
+      lead.finalInterview.remarks = remarks || '';
+      lead.finalInterview.updatedAt = new Date();
+
+      if (status === 'CONFIRMED') {
+        // Moves to Medical/Accounts Collection
+        lead.currentStage = 'ACCOUNTS_COLLECTION';
+      }
+
+      await lead.save();
+
+      await logLeadHistory({
+        lead,
+        performedBy: req.user,
+        actionType: 'FINAL_INTERVIEW_RESULT',
+        fromStage: prevStage,
+        toStage: lead.currentStage,
+        remarks: `Final Interview result: ${status}. Remarks: ${remarks || 'None'}. Confirmed by: ${interviewerName || req.user.name}`
+      });
+    }
+
+    res.json({
+      success: true,
+      message: `Interview result recorded: ${status}`,
+      data: lead
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Schedule GAMCA Medical Appointment (FRD Section 11)
+// @route   PUT /api/leads/:id/medical-schedule
+// @access  Private (Medical Team, Admin, Staff Head, Calling Staff)
+exports.scheduleMedicalAppointment = async (req, res) => {
+  try {
+    const { center, appointmentDate, slipNo, medicalFee, remarks } = req.body;
+    const lead = await Lead.findById(req.params.id);
+
+    if (!lead) {
+      return res.status(404).json({ success: false, message: 'Candidate lead not found' });
+    }
+
+    if (!lead.medicalDetails) {
+      lead.medicalDetails = {};
+    }
+
+    const assignedCenter = center || lead.medicalDetails.center || 'GAMCA Medical Center';
+    const appDate = appointmentDate ? new Date(appointmentDate) : (lead.medicalDetails.appointmentDate || new Date());
+    const slip = slipNo || lead.medicalDetails.slipNo || `GCC-${Math.floor(10000 + Math.random() * 90000)}`;
+    const fee = medicalFee !== undefined ? Number(medicalFee) : (lead.medicalDetails.medicalFee || 2500);
+
+    lead.medicalDetails.center = assignedCenter;
+    lead.medicalDetails.appointmentDate = appDate;
+    lead.medicalDetails.slipNo = slip;
+    lead.medicalDetails.medicalFee = fee;
+    lead.medicalDetails.status = 'SCHEDULED';
+    lead.medicalDetails.remarks = remarks || lead.medicalDetails.remarks || '';
+    lead.medicalDetails.updatedAt = new Date();
+
+    // Sync to paymentDetails medicalFee if not already set
+    if (!lead.paymentDetails) lead.paymentDetails = {};
+    if (!lead.paymentDetails.medicalFee || lead.paymentDetails.medicalFee === 0) {
+      lead.paymentDetails.medicalFee = fee;
+    }
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'MEDICAL_RESULT',
+      fromStage: lead.currentStage,
+      toStage: lead.currentStage,
+      remarks: `Scheduled GAMCA appointment at ${assignedCenter} on ${appDate.toLocaleDateString()} (Slip: ${slip}, Medical Fee: ₹${fee}). Scheduled by: ${req.user.name}`,
+      changes: {
+        center: assignedCenter,
+        appointmentDate: appDate,
+        slipNo: slip,
+        medicalFee: fee,
+        remarks: remarks || ''
+      }
+    });
+
+    res.json({
+      success: true,
+      message: `Medical appointment scheduled for ${lead.candidateName} at ${assignedCenter}`,
+      data: lead
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Submit GAMCA Medical Fitness Result (FIT / UNFIT) per FRD Section 11 & 12
+// @route   PUT /api/leads/:id/medical-result
+// @access  Private (Medical Team, Admin, Staff Head)
+exports.submitMedicalResult = async (req, res) => {
+  try {
+    const { status, center, slipNo, validity, reportUrl, remarks } = req.body;
+    const lead = await Lead.findById(req.params.id);
+
+    if (!lead) {
+      return res.status(404).json({ success: false, message: 'Candidate lead not found' });
+    }
+
+    if (!['FIT', 'UNFIT', 'PENDING'].includes(status)) {
+      return res.status(400).json({ success: false, message: 'Invalid medical status. Must be FIT, UNFIT, or PENDING' });
+    }
+
+    const prevStage = lead.currentStage;
+    if (!lead.medicalDetails) lead.medicalDetails = {};
+
+    lead.medicalDetails.status = status;
+    if (center) lead.medicalDetails.center = center;
+    if (slipNo) lead.medicalDetails.slipNo = slipNo;
+    lead.medicalDetails.validity = status === 'FIT' ? (validity || '12 Months') : 'None';
+    if (reportUrl !== undefined) lead.medicalDetails.reportUrl = reportUrl;
+    lead.medicalDetails.remarks = remarks || lead.medicalDetails.remarks || '';
+    lead.medicalDetails.updatedAt = new Date();
+
+    // FRD Section 11 & 12 Rule Enforcement:
+    if (status === 'FIT') {
+      // Step 12: Move back to Staff Head Desk for verification and reassignment to Calling Staff
+      lead.currentStage = 'STAFF_HEAD_HANDLING';
+      lead.isHold = false;
+      lead.holdReason = '';
+
+      await logLeadHistory({
+        lead,
+        performedBy: req.user,
+        actionType: 'MEDICAL_RESULT',
+        fromStage: prevStage,
+        toStage: 'STAFF_HEAD_HANDLING',
+        remarks: `Candidate cleared GAMCA Medical: FIT. Transferred to Staff Head Desk (Step 12) for Calling Staff assignment & Bill Book. Doctor remarks: ${remarks || 'Fit for GCC Employment'}`
+      });
+    } else if (status === 'UNFIT') {
+      // PDF Rule: Medically unfit candidates are quarantined / rejected to prevent fraudulent re-application
+      lead.currentStage = 'REJECTED';
+      lead.isHold = true;
+      lead.holdReason = `GAMCA Medical Unfit: ${remarks || 'Disqualified on medical exam'}`;
+
+      await logLeadHistory({
+        lead,
+        performedBy: req.user,
+        actionType: 'MEDICAL_RESULT',
+        fromStage: prevStage,
+        toStage: 'REJECTED',
+        remarks: `Candidate failed GAMCA Medical: UNFIT. File quarantined to Rejection / Hold Log. Reason: ${remarks || 'Disqualified on clinical test'}`
+      });
+    } else {
+      await logLeadHistory({
+        lead,
+        performedBy: req.user,
+        actionType: 'MEDICAL_RESULT',
+        fromStage: prevStage,
+        toStage: lead.currentStage,
+        remarks: `Medical status updated to ${status}. Remarks: ${remarks || 'Awaiting clinical reports'}`
+      });
+    }
+
+    await lead.save();
+
+    res.json({
+      success: true,
+      message: status === 'FIT' 
+        ? `Medical FIT confirmed for ${lead.candidateName}. Forwarded to Staff Head Desk (Step 12)!`
+        : `Medical UNFIT recorded. File quarantined to Rejection Log.`,
+      data: lead
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Record Payment Booking with separate Service Fee & Medical Fee (FRD Section 11 & 21)
+// @route   PUT /api/leads/:id/payment-booking
+// @access  Private (Medical Team, Accounts, Admin, Staff Head)
+exports.recordPaymentBooking = async (req, res) => {
+  try {
+    const { serviceFee, servicePaid, medicalFee, medicalPaid, paymentMode, receiptNo, remarks } = req.body;
+    const lead = await Lead.findById(req.params.id);
+
+    if (!lead) {
+      return res.status(404).json({ success: false, message: 'Candidate lead not found' });
+    }
+
+    if (!lead.paymentDetails) lead.paymentDetails = {};
+
+    const sFee = serviceFee !== undefined ? Number(serviceFee) : (lead.paymentDetails.serviceFee || 9500);
+    const sPaid = servicePaid !== undefined ? Number(servicePaid) : (lead.paymentDetails.servicePaid || 0);
+    const mFee = medicalFee !== undefined ? Number(medicalFee) : (lead.paymentDetails.medicalFee || 2500);
+    const mPaid = medicalPaid !== undefined ? Number(medicalPaid) : (lead.paymentDetails.medicalPaid || 0);
+
+    const totalCollected = sPaid + mPaid;
+    const totalRequired = sFee + mFee;
+
+    lead.paymentDetails.serviceFee = sFee;
+    lead.paymentDetails.servicePaid = sPaid;
+    lead.paymentDetails.medicalFee = mFee;
+    lead.paymentDetails.medicalPaid = mPaid;
+    lead.paymentDetails.advancePaid = totalCollected;
+    lead.paymentDetails.totalPaid = totalCollected;
+    lead.paymentDetails.paymentMode = paymentMode || lead.paymentDetails.paymentMode || 'UPI';
+    lead.paymentDetails.receiptNo = receiptNo || lead.paymentDetails.receiptNo || `REC-${Math.floor(10000 + Math.random() * 90000)}`;
+    lead.paymentDetails.lastPaymentDate = new Date();
+
+    if (totalCollected >= totalRequired && totalRequired > 0) {
+      lead.paymentDetails.paymentStatus = 'FULL';
+    } else if (totalCollected > 0) {
+      lead.paymentDetails.paymentStatus = 'PARTIAL';
+    } else {
+      lead.paymentDetails.paymentStatus = 'UNPAID';
+    }
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'PAYMENT_ADDED',
+      remarks: `Payment recorded: Service Fee ₹${sPaid}/₹${sFee}, Medical Fee ₹${mPaid}/₹${mFee}. Total Collected: ₹${totalCollected}. Mode: ${lead.paymentDetails.paymentMode}, Receipt #${lead.paymentDetails.receiptNo}. Recorded by ${req.user.name}`
+    });
+
+    res.json({
+      success: true,
+      message: `Payment booking recorded for ${lead.candidateName}. Receipt #${lead.paymentDetails.receiptNo}`,
+      data: lead
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Record Final Payment & Complete Settlement (FRD Section 17 & 23)
+// @route   PUT /api/leads/:id/final-payment
+// @access  Private (Pre-Viva Manager, Accounts, Admin)
+exports.recordFinalPayment = async (req, res) => {
+  try {
+    const { amount, paymentMode, receiptNo, remarks } = req.body;
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Candidate lead not found' });
+
+    if (!lead.paymentDetails) lead.paymentDetails = {};
+
+    const collected = Number(amount || 0);
+    const prevTotal = Number(lead.paymentDetails.totalPaid || lead.paymentDetails.advancePaid || 0);
+    const newTotal = prevTotal + collected;
+    const sFee = Number(lead.paymentDetails.serviceFee) || 9500;
+    const mFee = Number(lead.paymentDetails.medicalFee) || 2500;
+    const totalRequired = sFee + mFee;
+
+    lead.paymentDetails.totalPaid = newTotal;
+    lead.paymentDetails.lastPaymentDate = new Date();
+    if (paymentMode) lead.paymentDetails.paymentMode = paymentMode;
+    const rNo = receiptNo || `RCP-${Math.floor(10000 + Math.random() * 90000)}`;
+    lead.paymentDetails.receiptNo = rNo;
+
+    if (newTotal >= totalRequired && totalRequired > 0) {
+      lead.paymentDetails.paymentStatus = 'FULL';
+    } else if (newTotal > 0) {
+      lead.paymentDetails.paymentStatus = 'PARTIAL';
+    }
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'FINAL_PAYMENT_RECORDED',
+      remarks: `Final balance payment of ₹${collected} recorded (Total Paid: ₹${newTotal}/₹${totalRequired}). Receipt #${rNo}, Mode: ${paymentMode || 'UPI'}. Recorded by ${req.user.name}`
+    });
+
+    res.json({
+      success: true,
+      message: `Final balance payment of ₹${collected} recorded for ${lead.candidateName}. Total Paid: ₹${newTotal}`,
+      data: lead
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Verify Pre-Viva Documents (Passport, Trade Certification, Medical, PCC)
+// @route   PUT /api/leads/:id/pre-viva-verify
+// @access  Private (Pre-Viva Manager / Admin)
+exports.verifyPreVivaDocs = async (req, res) => {
+  try {
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+    lead.preVivaDetails = lead.preVivaDetails || {};
+    lead.preVivaDetails.documentsVerified = true;
+    lead.preVivaDetails.verifiedAt = new Date();
+    lead.preVivaDetails.verifiedBy = req.user._id;
+    lead.preVivaDetails.status = 'READY_FOR_VISA';
+    if (req.body.remarks) {
+      lead.preVivaDetails.remarks = req.body.remarks;
+    }
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'PRE_VIVA_DOCS_VERIFIED',
+      remarks: `Pre-Viva documentation verified by ${req.user.name}. Status: Ready for Visa Allocation. ${req.body.remarks || ''}`
+    });
+
+    res.json({
+      success: true,
+      message: `Documents verified for ${lead.candidateName}. Ready for Visa Manager assignment.`,
+      data: lead
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Assign Visa Manager & Set Viva Examination Date
+// @route   PUT /api/leads/:id/pre-viva-assign
+// @access  Private (Pre-Viva Manager / Admin)
+exports.assignPreVivaVisa = async (req, res) => {
+  try {
+    const { vivaDate, visaManagerId, visaManagerName, dispatchToVisa, remarks } = req.body;
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+    lead.preVivaDetails = lead.preVivaDetails || {};
+    lead.preVivaDetails.documentsVerified = true;
+    if (vivaDate) {
+      lead.preVivaDetails.vivaDate = new Date(vivaDate);
+      lead.visaDetails.visaDate = new Date(vivaDate);
+      lead.visaDetails.isDateAssigned = true;
+    }
+    if (visaManagerName) {
+      lead.preVivaDetails.visaManagerName = visaManagerName;
+    }
+    const mongoose = require('mongoose');
+    if (visaManagerId && mongoose.Types.ObjectId.isValid(visaManagerId)) {
+      lead.assignedVisaManager = visaManagerId;
+      lead.preVivaDetails.assignedVisaManager = visaManagerId;
+    }
+    lead.preVivaDetails.status = 'SCHEDULED';
+    if (remarks) {
+      lead.preVivaDetails.remarks = remarks;
+    }
+
+    const prevStage = lead.currentStage;
+    if (dispatchToVisa) {
+      lead.currentStage = 'VISA_PROCESSING';
+    }
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'PRE_VIVA_ASSIGNED',
+      fromStage: prevStage,
+      toStage: lead.currentStage,
+      remarks: `Assigned to Visa Manager: ${visaManagerName || 'Assigned Officer'}. Viva Date: ${vivaDate || 'Scheduled'}. Dispatched to Visa Processing: ${dispatchToVisa ? 'YES' : 'NO'}. ${remarks || ''}`
+    });
+
+    res.json({
+      success: true,
+      message: `File assigned to ${visaManagerName || 'Visa Manager'}${dispatchToVisa ? ' and dispatched to Visa Processing' : ''}.`,
+      data: lead
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Submit Pre-Viva Candidate Evaluation (Score & Clearance)
+// @route   PUT /api/leads/:id/pre-viva-evaluate
+// @access  Private (Pre-Viva Manager / Admin)
+exports.evaluatePreVivaCandidate = async (req, res) => {
+  try {
+    const { score, decision, panelMember, remarks } = req.body;
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+    lead.preVivaDetails = lead.preVivaDetails || {};
+    lead.preVivaDetails.score = Number(score) || 0;
+    lead.preVivaDetails.panelMember = panelMember || req.user.name;
+    lead.preVivaDetails.remarks = remarks || '';
+
+    const prevStage = lead.currentStage;
+
+    if (decision === 'CLEARED') {
+      lead.preVivaDetails.status = 'CLEARED';
+      lead.currentStage = 'VISA_PROCESSING';
+    } else if (decision === 'RETEST_HOLD') {
+      lead.preVivaDetails.status = 'RETEST_HOLD';
+      lead.isHold = true;
+      lead.holdReason = `Pre-Viva Retest Required: ${remarks || 'Score below passing benchmark'}`;
+    } else {
+      lead.preVivaDetails.status = decision || 'PENDING_VERIFICATION';
+    }
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'PRE_VIVA_EVALUATED',
+      fromStage: prevStage,
+      toStage: lead.currentStage,
+      remarks: `Pre-Viva Evaluation: Score ${score}/100, Verdict: ${decision}. Panel: ${panelMember || req.user.name}. ${remarks || ''}`
+    });
+
+    res.json({
+      success: true,
+      message: `Evaluation saved for ${lead.candidateName} (${decision}). Score: ${score}/100.`,
+      data: lead
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Confirm Visa Delay / Date Change Request
+// @route   PUT /api/leads/:id/pre-viva-delay
+// @access  Private (Pre-Viva Manager / Admin)
+exports.confirmVisaDelay = async (req, res) => {
+  try {
+    const { action, newExpectedDate, candidateRemarks, reason } = req.body;
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+    lead.preVivaDetails = lead.preVivaDetails || {};
+    lead.preVivaDetails.delayHistory = lead.preVivaDetails.delayHistory || [];
+
+    const attemptNumber = lead.preVivaDetails.delayHistory.length + 1;
+    const prevStage = lead.currentStage;
+
+    if (action === 'CANCEL') {
+      lead.currentStage = 'CANCELLED';
+      lead.isHold = true;
+      lead.holdReason = candidateRemarks || 'Candidate refused delay and requested file cancellation';
+      
+      lead.preVivaDetails.delayHistory.push({
+        attempt: attemptNumber,
+        delayDate: new Date(),
+        reason: reason || 'Candidate cancelled during delay review',
+        user: req.user.name,
+        confirmedReadyAt: null,
+        candidateRemarks: candidateRemarks || 'Cancelled'
+      });
+
+      await logLeadHistory({
+        lead,
+        performedBy: req.user,
+        actionType: 'VISA_DELAY_CANCELLED',
+        fromStage: prevStage,
+        toStage: 'CANCELLED',
+        remarks: `Candidate opted to cancel due to visa delay. Reason: ${candidateRemarks || reason || 'Unwilling to wait'}`
+      });
+
+      await lead.save();
+      return res.json({
+        success: true,
+        message: `Candidate ${lead.candidateName} has been cancelled per request.`,
+        data: lead
+      });
+    }
+
+    // Otherwise Confirm Ready & Set New Date
+    lead.preVivaDetails.delayHistory.push({
+      attempt: attemptNumber,
+      expectedDate: newExpectedDate ? new Date(newExpectedDate) : new Date(),
+      delayDate: new Date(),
+      reason: reason || 'Candidate confirmed ready by Pre-Viva Manager',
+      user: req.user.name,
+      confirmedReadyAt: new Date(),
+      candidateRemarks: candidateRemarks || 'Candidate confirmed ready for revised date'
+    });
+
+    if (newExpectedDate) {
+      lead.visaDetails.visaDate = new Date(newExpectedDate);
+      lead.visaDetails.isDateAssigned = true;
+      lead.preVivaDetails.vivaDate = new Date(newExpectedDate);
+    }
+
+    if (lead.visaDetails.revisionRequest) {
+      lead.visaDetails.revisionRequest.isPending = false;
+    }
+
+    lead.currentStage = 'VISA_PROCESSING';
+    lead.isHold = false;
+    lead.holdReason = '';
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'VISA_DELAY_CONFIRMED',
+      fromStage: prevStage,
+      toStage: 'VISA_PROCESSING',
+      remarks: `Visa Delay resolved: Candidate confirmed ready. New expected date: ${newExpectedDate || 'Updated'}. Remarks: ${candidateRemarks || ''}`
+    });
+
+    res.json({
+      success: true,
+      message: `Delay confirmed for ${lead.candidateName}. Reassigned to Visa Processing with updated date.`,
+      data: lead
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Submit / Apply for Overseas Visa (Step 16)
+// @route   PUT /api/leads/:id/visa-apply
+// @access  Private (Visa Manager / Admin)
+exports.applyVisa = async (req, res) => {
+  try {
+    const { 
+      applicationNumber, country, embassy, visaType, fee, 
+      appliedOn, expectedDate, remarks 
+    } = req.body;
+    
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+    lead.visaDetails = lead.visaDetails || {};
+    lead.visaDetails.applicationNumber = applicationNumber || `VISA-${Math.floor(1000 + Math.random() * 9000)}`;
+    lead.visaDetails.country = country || lead.visaDetails.country || lead.locationConfirmation?.confirmedLocation || 'UAE';
+    lead.visaDetails.embassy = embassy || `${lead.visaDetails.country} Embassy, Delhi`;
+    lead.visaDetails.visaType = visaType || 'Work Permit Visa';
+    lead.visaDetails.fee = fee || '₹4,500';
+    lead.visaDetails.appliedOn = appliedOn ? new Date(appliedOn) : new Date();
+    lead.visaDetails.expectedDate = expectedDate ? new Date(expectedDate) : null;
+    lead.visaDetails.status = 'SUBMITTED';
+    lead.visaDetails.trackingStage = 1;
+    lead.visaDetails.remarks = remarks || '';
+    lead.currentStage = 'VISA_PROCESSING';
+
+    lead.visaDetails.trackingHistory = lead.visaDetails.trackingHistory || [];
+    lead.visaDetails.trackingHistory.push({
+      date: new Date(),
+      stage: 1,
+      event: `Dossier Lodged at ${lead.visaDetails.embassy}`,
+      user: req.user.name
+    });
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'VISA_APPLICATION_SUBMITTED',
+      toStage: 'VISA_PROCESSING',
+      remarks: `Visa application #${lead.visaDetails.applicationNumber} lodged at ${lead.visaDetails.embassy} for ${lead.visaDetails.country}. Expected ready date: ${expectedDate || 'Pending'}. Fee: ${lead.visaDetails.fee}`
+    });
+
+    res.json({
+      success: true,
+      message: `Visa application #${lead.visaDetails.applicationNumber} submitted for ${lead.candidateName}`,
+      data: lead
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Update Visa Stamping Status (Approved, Delayed, Rejected, Processing)
+// @route   PUT /api/leads/:id/visa-status
+// @access  Private (Visa Manager / Admin)
+exports.updateVisaStatus = async (req, res) => {
+  try {
+    const { status, expectedDate, remarks, stampedDate } = req.body;
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+    lead.visaDetails = lead.visaDetails || {};
+    lead.visaDetails.status = status;
+    lead.visaDetails.remarks = remarks || lead.visaDetails.remarks;
+    if (expectedDate) {
+      lead.visaDetails.expectedDate = new Date(expectedDate);
+    }
+
+    lead.visaDetails.trackingHistory = lead.visaDetails.trackingHistory || [];
+
+    if (status === 'APPROVED') {
+      lead.visaDetails.trackingStage = 5;
+      lead.visaDetails.stampedDate = stampedDate ? new Date(stampedDate) : new Date();
+      lead.currentStage = 'VIVA_PLACEMENT'; // Step 17: Moves to Final Client Viva & Placement Desk
+      lead.visaDetails.trackingHistory.push({
+        date: new Date(),
+        stage: 5,
+        event: `Visa Approved & Stamped successfully! ${remarks || ''}`,
+        user: req.user.name
+      });
+    } else if (status === 'DELAYED') {
+      lead.visaDetails.revisionRequest = {
+        isPending: true,
+        requestedDate: expectedDate ? new Date(expectedDate) : null,
+        reason: remarks || 'Consular delay reported by Visa Desk',
+        requestedBy: req.user._id
+      };
+      lead.visaDetails.trackingHistory.push({
+        date: new Date(),
+        stage: lead.visaDetails.trackingStage || 2,
+        event: `Visa Stamping Delayed: ${remarks || 'Redirected to Pre-Viva Delay Review'}`,
+        user: req.user.name
+      });
+    } else if (status === 'REJECTED') {
+      lead.currentStage = 'REJECTED';
+      lead.visaDetails.trackingHistory.push({
+        date: new Date(),
+        stage: lead.visaDetails.trackingStage || 2,
+        event: `Visa Application Rejected: ${remarks || 'Consular denial'}`,
+        user: req.user.name
+      });
+    } else {
+      lead.visaDetails.trackingHistory.push({
+        date: new Date(),
+        stage: lead.visaDetails.trackingStage || 2,
+        event: `Visa Status updated to ${status}. ${remarks || ''}`,
+        user: req.user.name
+      });
+    }
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'VISA_STATUS_UPDATED',
+      remarks: `Visa status updated to ${status}. ${remarks || ''}`
+    });
+
+    res.json({
+      success: true,
+      message: `Visa status for ${lead.candidateName} updated to "${status}"`,
+      data: lead
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Verify Candidate Visa Dossier Documents (Passport, GAMCA, PCC, Trade, Demand, Photos)
+// @route   PUT /api/leads/:id/visa-documents
+// @access  Private (Visa Manager / Admin)
+exports.verifyVisaDocuments = async (req, res) => {
+  try {
+    const { verifiedDocuments } = req.body;
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+    lead.visaDetails = lead.visaDetails || {};
+    lead.visaDetails.verifiedDocuments = verifiedDocuments;
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'VISA_DOCUMENT_VERIFIED',
+      remarks: `Visa dossier documents verified by ${req.user.name}`
+    });
+
+    res.json({
+      success: true,
+      message: `Documents verification saved for ${lead.candidateName}`,
+      data: lead
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Update Visa Consular Tracking Stage & Milestones (Stages 1 - 5)
+// @route   PUT /api/leads/:id/visa-tracking
+// @access  Private (Visa Manager / Admin)
+exports.updateVisaTracking = async (req, res) => {
+  try {
+    const { stage, event, remarks, isDelayed } = req.body;
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+    lead.visaDetails = lead.visaDetails || {};
+    if (stage) {
+      lead.visaDetails.trackingStage = Number(stage);
+    }
+    if (remarks) {
+      lead.visaDetails.remarks = remarks;
+    }
+
+    lead.visaDetails.trackingHistory = lead.visaDetails.trackingHistory || [];
+    lead.visaDetails.trackingHistory.push({
+      date: new Date(),
+      stage: Number(stage) || lead.visaDetails.trackingStage,
+      event: event || `Tracking milestone reached: Stage ${stage}`,
+      user: req.user.name
+    });
+
+    if (Number(stage) === 5) {
+      lead.visaDetails.status = 'APPROVED';
+      lead.visaDetails.stampedDate = new Date();
+      lead.currentStage = 'VIVA_PLACEMENT';
+    }
+
+    if (isDelayed) {
+      lead.visaDetails.status = 'DELAYED';
+      lead.visaDetails.revisionRequest = {
+        isPending: true,
+        requestedDate: null,
+        reason: remarks || 'Delayed in consular tracking',
+        requestedBy: req.user._id
+      };
+    }
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'VISA_TRACKING_UPDATED',
+      remarks: `Visa tracking stage set to Stage ${stage}: ${event || ''}. ${remarks || ''}`
+    });
+
+    res.json({
+      success: true,
+      message: `Tracking updated for ${lead.candidateName} to Stage ${stage}`,
+      data: lead
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Schedule Client Final Viva / Interview (FRD Step 17)
+// @route   PUT /api/leads/:id/placement-viva-schedule
+// @access  Private
+exports.schedulePlacementViva = async (req, res) => {
+  try {
+    const { vivaId, company, country, date, time, mode, panel, room, remarks, status } = req.body;
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Candidate lead not found' });
+
+    if (!lead.placementDetails) lead.placementDetails = {};
+    if (!lead.placementDetails.vivaSchedule) lead.placementDetails.vivaSchedule = {};
+
+    const genVivaId = vivaId || lead.placementDetails.vivaSchedule.vivaId || `VIVA-${Math.floor(100 + Math.random() * 900)}`;
+
+    lead.placementDetails.vivaSchedule = {
+      vivaId: genVivaId,
+      company: company || lead.placementDetails.vivaSchedule.company || '',
+      country: country || lead.placementDetails.vivaSchedule.country || '',
+      date: date ? new Date(date) : (lead.placementDetails.vivaSchedule.date || new Date()),
+      time: time || lead.placementDetails.vivaSchedule.time || '10:00 AM',
+      mode: mode || lead.placementDetails.vivaSchedule.mode || 'Foreign Delegate',
+      panel: panel || lead.placementDetails.vivaSchedule.panel || '',
+      room: room || lead.placementDetails.vivaSchedule.room || 'Interview Hall A',
+      status: status || 'SCHEDULED',
+      remarks: remarks || '',
+      scheduledBy: req.user._id,
+      scheduledAt: new Date()
+    };
+
+    if (lead.currentStage !== 'COMPLETED') {
+      lead.currentStage = 'VIVA_PLACEMENT';
+    }
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'VIVA_SCHEDULED',
+      remarks: `Client Viva #${genVivaId} scheduled for ${lead.candidateName} with ${company || 'Client Panel'} on ${date || 'upcoming date'}`
+    });
+
+    res.json({
+      success: true,
+      message: `Client Viva scheduled successfully for ${lead.candidateName}`,
+      data: lead
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Submit Final Client Viva Results & Scorecard (FRD Step 17 / 18)
+// @route   PUT /api/leads/:id/placement-viva-result
+// @access  Private
+exports.submitPlacementVivaResult = async (req, res) => {
+  try {
+    const { resId, score, breakdown, status, remarks, evaluatedBy } = req.body;
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Candidate lead not found' });
+
+    if (!lead.placementDetails) lead.placementDetails = {};
+    if (!lead.placementDetails.vivaResult) lead.placementDetails.vivaResult = {};
+
+    const genResId = resId || lead.placementDetails.vivaResult.resId || `RES-${Math.floor(500 + Math.random() * 499)}`;
+
+    lead.placementDetails.vivaResult = {
+      resId: genResId,
+      score: score !== undefined ? Number(score) : lead.placementDetails.vivaResult.score,
+      breakdown: breakdown || lead.placementDetails.vivaResult.breakdown || { skill: 0, theory: 0, safety: 0, comm: 0 },
+      status: status || 'SELECTED',
+      remarks: remarks || '',
+      evaluatedBy: evaluatedBy || req.user.name,
+      evaluatedAt: new Date()
+    };
+
+    if (lead.placementDetails.vivaSchedule) {
+      lead.placementDetails.vivaSchedule.status = 'COMPLETED';
+    }
+
+    if (status === 'SELECTED') {
+      lead.currentStage = 'VIVA_PLACEMENT';
+    } else if (status === 'NOT_SELECTED') {
+      lead.placementDetails.vivaResult.status = 'NOT_SELECTED';
+    }
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'VIVA_RESULT_SUBMITTED',
+      remarks: `Viva result recorded for ${lead.candidateName}: ${status} (Score: ${score || 'N/A'}). ${remarks || ''}`
+    });
+
+    res.json({
+      success: true,
+      message: `Viva result updated for ${lead.candidateName} as "${status}"`,
+      data: lead
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Issue / Update Foreign Offer Letter (FRD Step 18)
+// @route   PUT /api/leads/:id/placement-offer-letter
+// @access  Private
+exports.issuePlacementOfferLetter = async (req, res) => {
+  try {
+    const {
+      offId, company, country, job, basicSalary, allowance, totalSalary,
+      food, accommodation, contractYears, issuedOn, expiresOn, status, notes
+    } = req.body;
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Candidate lead not found' });
+
+    if (!lead.placementDetails) lead.placementDetails = {};
+    if (!lead.placementDetails.offerLetter) lead.placementDetails.offerLetter = {};
+
+    const genOffId = offId || lead.placementDetails.offerLetter.offId || `OFF-${Math.floor(300 + Math.random() * 699)}`;
+
+    lead.placementDetails.offerLetter = {
+      offId: genOffId,
+      company: company || lead.placementDetails.offerLetter.company || '',
+      country: country || lead.placementDetails.offerLetter.country || '',
+      job: job || lead.trade || lead.placementDetails.offerLetter.job || '',
+      basicSalary: basicSalary || lead.placementDetails.offerLetter.basicSalary || '',
+      allowance: allowance || lead.placementDetails.offerLetter.allowance || '',
+      totalSalary: totalSalary || lead.placementDetails.offerLetter.totalSalary || '',
+      food: food || lead.placementDetails.offerLetter.food || 'Company Provided',
+      accommodation: accommodation || lead.placementDetails.offerLetter.accommodation || 'Company Provided',
+      contractYears: contractYears || lead.placementDetails.offerLetter.contractYears || '2 Years (Renewable)',
+      issuedOn: issuedOn ? new Date(issuedOn) : (lead.placementDetails.offerLetter.issuedOn || new Date()),
+      expiresOn: expiresOn ? new Date(expiresOn) : lead.placementDetails.offerLetter.expiresOn,
+      status: status || lead.placementDetails.offerLetter.status || 'SENT',
+      notes: notes || lead.placementDetails.offerLetter.notes || ''
+    };
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: status === 'ACCEPTED' ? 'OFFER_LETTER_STATUS_UPDATED' : 'OFFER_LETTER_ISSUED',
+      remarks: `Offer Letter #${genOffId} updated for ${lead.candidateName} (Company: ${company || 'Client'}, Status: ${status || 'SENT'})`
+    });
+
+    res.json({
+      success: true,
+      message: `Offer letter updated for ${lead.candidateName}`,
+      data: lead
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Update Flight Booking & Deployment On-Site Joining (FRD Step 19 / 20)
+// @route   PUT /api/leads/:id/placement-deployment
+// @access  Private
+exports.updatePlacementDeployment = async (req, res) => {
+  try {
+    const {
+      deployId, company, country, airline, flightNumber, pnr, sector,
+      departureAirport, arrivalAirport, flightDate, flightTime, joiningDate,
+      poeStatus, baggage, pickupOfficer, campLocation, status, notes
+    } = req.body;
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Candidate lead not found' });
+
+    if (!lead.placementDetails) lead.placementDetails = {};
+    if (!lead.placementDetails.deployment) lead.placementDetails.deployment = {};
+
+    const genDeployId = deployId || lead.placementDetails.deployment.deployId || `DEP-${Math.floor(800 + Math.random() * 199)}`;
+
+    lead.placementDetails.deployment = {
+      deployId: genDeployId,
+      company: company || lead.placementDetails.deployment.company || '',
+      country: country || lead.placementDetails.deployment.country || '',
+      airline: airline || lead.placementDetails.deployment.airline || '',
+      flightNumber: flightNumber || lead.placementDetails.deployment.flightNumber || '',
+      pnr: pnr || lead.placementDetails.deployment.pnr || '',
+      sector: sector || lead.placementDetails.deployment.sector || '',
+      departureAirport: departureAirport || lead.placementDetails.deployment.departureAirport || '',
+      arrivalAirport: arrivalAirport || lead.placementDetails.deployment.arrivalAirport || '',
+      flightDate: flightDate ? new Date(flightDate) : lead.placementDetails.deployment.flightDate,
+      flightTime: flightTime || lead.placementDetails.deployment.flightTime || '',
+      joiningDate: joiningDate ? new Date(joiningDate) : lead.placementDetails.deployment.joiningDate,
+      poeStatus: poeStatus || lead.placementDetails.deployment.poeStatus || 'POE Cleared',
+      baggage: baggage || lead.placementDetails.deployment.baggage || '30 KG Check-in + 7 KG Cabin',
+      pickupOfficer: pickupOfficer || lead.placementDetails.deployment.pickupOfficer || '',
+      campLocation: campLocation || lead.placementDetails.deployment.campLocation || '',
+      status: status || lead.placementDetails.deployment.status || 'FLIGHT_BOOKED',
+      notes: notes || lead.placementDetails.deployment.notes || ''
+    };
+
+    if (status === 'JOINED_ON_SITE') {
+      lead.currentStage = 'COMPLETED';
+    }
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'FLIGHT_JOINING_UPDATED',
+      remarks: `Deployment updated for ${lead.candidateName}: ${status} (PNR: ${pnr || 'N/A'}, Airline: ${airline || 'N/A'})`
+    });
+
+    res.json({
+      success: true,
+      message: `Deployment & flight details saved for ${lead.candidateName}`,
+      data: lead
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+
+
+
+
