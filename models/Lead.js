@@ -54,8 +54,14 @@ const LeadSchema = new mongoose.Schema({
   selectionMode: { type: String, enum: ['INTERVIEW', 'DIRECT_CV', 'NONE'], default: 'NONE' },
   
   initialInterview: {
-    status: { type: String, enum: ['PENDING', 'PASS', 'FAIL'], default: 'PENDING' },
+    status: { type: String, enum: ['PENDING', 'PASS', 'FAIL', 'ON_HOLD'], default: 'PENDING' },
     remarks: { type: String, default: '' },
+    technicalScore: { type: Number, default: 0 },
+    communicationScore: { type: Number, default: 0 },
+    physicalFitness: { type: String, default: '' },
+    offeredSalary: { type: String, default: '' },
+    rejectionReason: { type: String, default: '' },
+    interviewerName: { type: String, default: '' },
     updatedAt: { type: Date }
   },
 

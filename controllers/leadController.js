@@ -1176,16 +1176,40 @@ exports.bulkReassignCallingStaff = async (req, res) => {
 // @access  Private (Interview Panel, Admin, Staff Head)
 exports.submitInterviewResult = async (req, res) => {
   try {
-    const { interviewType = 'INITIAL', status, remarks, interviewDate, interviewerName } = req.body;
-    const lead = await Lead.findById(req.params.id);
+    const {
+      interviewType = 'INITIAL',
+      status,
+      remarks,
+      interviewDate,
+      interviewerName,
+      technicalScore,
+      communicationScore,
+      physicalFitness,
+      offeredSalary,
+      rejectionReason,
+    } = req.body;
+
+    let lead;
+    if (mongoose.Types.ObjectId.isValid(req.params.id)) {
+      lead = await Lead.findById(req.params.id);
+    }
+    if (!lead) {
+      lead = await Lead.findOne({ leadId: req.params.id });
+    }
 
     if (!lead) return res.status(404).json({ success: false, message: 'Candidate lead not found' });
 
     const prevStage = lead.currentStage;
 
     if (interviewType === 'INITIAL') {
-      lead.initialInterview.status = status; // PASS or FAIL
+      lead.initialInterview.status = status; // PASS, FAIL, ON_HOLD
       lead.initialInterview.remarks = remarks || '';
+      if (technicalScore !== undefined) lead.initialInterview.technicalScore = technicalScore;
+      if (communicationScore !== undefined) lead.initialInterview.communicationScore = communicationScore;
+      if (physicalFitness) lead.initialInterview.physicalFitness = physicalFitness;
+      if (offeredSalary) lead.initialInterview.offeredSalary = offeredSalary;
+      if (rejectionReason) lead.initialInterview.rejectionReason = rejectionReason;
+      if (interviewerName) lead.initialInterview.interviewerName = interviewerName;
       lead.initialInterview.updatedAt = new Date();
 
       if (status === 'PASS') {
@@ -1194,6 +1218,8 @@ exports.submitInterviewResult = async (req, res) => {
       } else if (status === 'FAIL') {
         // FAIL candidates remain closed/rejected or in a follow-up status
         lead.currentStage = 'REJECTED';
+      } else if (status === 'ON_HOLD') {
+        lead.currentStage = 'INITIAL_INTERVIEW';
       }
 
       await lead.save();
