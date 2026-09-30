@@ -267,10 +267,11 @@ exports.updateLead = async (req, res) => {
 
     const prevData = lead.toObject();
 
-    // Editable basic fields
+    // Editable basic fields & workflow stage
     const {
       candidateName, phone, email, city, state, trade, notes,
-      passportNumber, isPassportHolder, applicationForm
+      passportNumber, isPassportHolder, applicationForm,
+      currentStage, selectionMode, initialInterview
     } = req.body;
 
     if (candidateName) lead.candidateName = candidateName;
@@ -282,6 +283,14 @@ exports.updateLead = async (req, res) => {
     if (notes !== undefined) lead.notes = notes;
     if (passportNumber !== undefined) lead.passportNumber = passportNumber;
     if (isPassportHolder !== undefined) lead.isPassportHolder = isPassportHolder;
+    if (currentStage !== undefined) lead.currentStage = currentStage;
+    if (selectionMode !== undefined) lead.selectionMode = selectionMode;
+    if (initialInterview !== undefined) {
+      lead.initialInterview = {
+        ...lead.initialInterview,
+        ...initialInterview
+      };
+    }
 
     if (applicationForm) {
       lead.applicationForm = {
@@ -603,7 +612,17 @@ exports.getLeads = async (req, res) => {
     } else if (req.user.role === 'CALLING_STAFF') {
       conditions.push({ assignedCallingStaff: req.user._id });
     } else if (req.user.role === 'INTERVIEW_PANEL') {
-      conditions.push({ currentStage: 'INITIAL_INTERVIEW' });
+      if (stage && stage !== 'ALL') {
+        conditions.push({ currentStage: stage });
+      } else {
+        conditions.push({
+          $or: [
+            { currentStage: { $in: ['INITIAL_INTERVIEW', 'INITIAL_INTERVIEW_SCHEDULED'] } },
+            { selectionMode: 'INTERVIEW' },
+            { 'initialInterview.status': { $in: ['PASS', 'FAIL', 'ON_HOLD'] } }
+          ]
+        });
+      }
     } else if (req.user.role === 'MEDICAL_DEPT') {
       conditions.push({ currentStage: 'MEDICAL_PROCESS' });
     } else if (req.user.role === 'ACCOUNTS') {
