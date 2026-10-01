@@ -672,7 +672,7 @@ exports.getPublicRoles = async (req, res) => {
         const users = await User.find(
           { role: def.backendRole, isActive: true },
           'name email phone department password'
-        ).lean();
+        ).sort({ updatedAt: -1 }).lean();
 
         const activeStaffCount = users.length;
         const defaultUser = users[0] || null;
