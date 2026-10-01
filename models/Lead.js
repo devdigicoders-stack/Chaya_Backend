@@ -98,10 +98,22 @@ const LeadSchema = new mongoose.Schema({
     medicalPaid: { type: Number, default: 0 },
     advancePaid: { type: Number, default: 0 },
     totalPaid: { type: Number, default: 0 },
+    totalFee: { type: Number, default: 0 },
+    balanceDue: { type: Number, default: 0 },
     paymentStatus: { type: String, enum: ['UNPAID', 'PARTIAL', 'FULL'], default: 'UNPAID' },
     paymentMode: { type: String, default: 'UPI' },
     receiptNo: { type: String, default: '' },
-    lastPaymentDate: { type: Date, default: null }
+    lastPaymentDate: { type: Date, default: null },
+    history: [
+      {
+        amount: { type: Number, required: true },
+        paymentMode: { type: String, default: 'UPI' },
+        receiptNo: { type: String },
+        remarks: { type: String },
+        recordedBy: { type: String },
+        date: { type: Date, default: Date.now }
+      }
+    ]
   },
 
   locationConfirmation: {

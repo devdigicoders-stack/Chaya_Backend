@@ -1584,7 +1584,13 @@ exports.recordPaymentBooking = async (req, res) => {
 exports.recordFinalPayment = async (req, res) => {
   try {
     const { amount, paymentMode, receiptNo, remarks } = req.body;
-    const lead = await Lead.findById(req.params.id);
+    let lead = null;
+    if (mongoose.Types.ObjectId.isValid(req.params.id)) {
+      lead = await Lead.findById(req.params.id);
+    }
+    if (!lead) {
+      lead = await Lead.findOne({ leadId: req.params.id });
+    }
     if (!lead) return res.status(404).json({ success: false, message: 'Candidate lead not found' });
 
     if (!lead.paymentDetails) lead.paymentDetails = {};
@@ -1594,9 +1600,14 @@ exports.recordFinalPayment = async (req, res) => {
     const newTotal = prevTotal + collected;
     const sFee = Number(lead.paymentDetails.serviceFee) || 9500;
     const mFee = Number(lead.paymentDetails.medicalFee) || 2500;
-    const totalRequired = sFee + mFee;
+    const totalRequired = Number(lead.paymentDetails.totalFee) || (sFee + mFee);
+    const remainingBalance = Math.max(0, totalRequired - newTotal);
 
+    lead.paymentDetails.serviceFee = sFee;
+    lead.paymentDetails.medicalFee = mFee;
+    lead.paymentDetails.totalFee = totalRequired;
     lead.paymentDetails.totalPaid = newTotal;
+    lead.paymentDetails.balanceDue = remainingBalance;
     lead.paymentDetails.lastPaymentDate = new Date();
     if (paymentMode) lead.paymentDetails.paymentMode = paymentMode;
     const rNo = receiptNo || `RCP-${Math.floor(10000 + Math.random() * 90000)}`;
@@ -1608,13 +1619,25 @@ exports.recordFinalPayment = async (req, res) => {
       lead.paymentDetails.paymentStatus = 'PARTIAL';
     }
 
+    if (!Array.isArray(lead.paymentDetails.history)) {
+      lead.paymentDetails.history = [];
+    }
+    lead.paymentDetails.history.push({
+      amount: collected,
+      paymentMode: paymentMode || 'UPI',
+      receiptNo: rNo,
+      remarks: remarks || 'Final settlement payment',
+      recordedBy: req.user?.name || 'Pre-Viva Manager',
+      date: new Date()
+    });
+
     await lead.save();
 
     await logLeadHistory({
       lead,
       performedBy: req.user,
       actionType: 'FINAL_PAYMENT_RECORDED',
-      remarks: `Final balance payment of ₹${collected} recorded (Total Paid: ₹${newTotal}/₹${totalRequired}). Receipt #${rNo}, Mode: ${paymentMode || 'UPI'}. Recorded by ${req.user.name}`
+      remarks: `Final balance payment of ₹${collected} recorded (Total Paid: ₹${newTotal}/₹${totalRequired}, Balance: ₹${remainingBalance}). Receipt #${rNo}, Mode: ${paymentMode || 'UPI'}. Recorded by ${req.user.name}`
     });
 
     res.json({
