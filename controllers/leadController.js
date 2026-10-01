@@ -635,7 +635,15 @@ exports.getLeads = async (req, res) => {
     } else if (req.user.role === 'ACCOUNTS') {
       conditions.push({ currentStage: 'ACCOUNTS_COLLECTION' });
     } else if (req.user.role === 'PRE_VISA_MANAGER') {
-      conditions.push({ currentStage: 'PRE_VISA' });
+      conditions.push({
+        $or: [
+          { currentStage: 'PRE_VISA' },
+          { fileType: { $in: ['MOVE_FILE', 'DIRECT_FILE'] } },
+          { 'locationConfirmation.isConfirmed': true },
+          { 'visaDetails.isDateAssigned': true },
+          { 'preVivaDetails.documentsVerified': true }
+        ]
+      });
     } else if (req.user.role === 'VISA_MANAGER') {
       conditions.push({ currentStage: 'VISA_PROCESSING' });
     } else if (req.user.role === 'VIVA_MANAGER') {
