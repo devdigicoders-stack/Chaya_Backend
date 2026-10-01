@@ -1650,6 +1650,18 @@ exports.verifyPreVivaDocs = async (req, res) => {
     if (req.body.remarks) {
       lead.preVivaDetails.remarks = req.body.remarks;
     }
+    if (req.body.documents && Array.isArray(req.body.documents)) {
+      lead.preVivaDetails.documents = req.body.documents.map(d => ({
+        name: d.title || d.name || 'Document',
+        title: d.title || d.name || 'Document',
+        fileName: d.fileName || null,
+        fileUrl: d.fileUrl || null,
+        status: (d.status?.toString().toUpperCase() === 'VERIFIED') ? 'VERIFIED' : 'PENDING',
+        verifiedAt: new Date(),
+        uploadTime: d.uploadTime || null
+      }));
+      lead.markModified('preVivaDetails');
+    }
 
     await lead.save();
 
@@ -1664,6 +1676,74 @@ exports.verifyPreVivaDocs = async (req, res) => {
       success: true,
       message: `Documents verified for ${lead.candidateName}. Ready for Visa Manager assignment.`,
       data: lead
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Upload document for a lead (saved in /uploads/documents)
+// @route   POST /api/leads/:id/upload-document
+// @access  Private
+exports.uploadLeadDocument = async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'No file uploaded' });
+    }
+
+    const { docTitle, category } = req.body;
+    const filePath = `/uploads/documents/${req.file.filename}`;
+    const fileSize = `${(req.file.size / (1024 * 1024)).toFixed(2)} MB`;
+
+    const mongoose = require('mongoose');
+    let lead = null;
+    if (mongoose.Types.ObjectId.isValid(req.params.id)) {
+      lead = await Lead.findById(req.params.id);
+    }
+    if (!lead) {
+      lead = await Lead.findOne({ leadId: req.params.id });
+    }
+
+    const docItem = {
+      name: docTitle || req.file.originalname,
+      title: docTitle || req.file.originalname,
+      fileName: req.file.originalname,
+      fileUrl: filePath,
+      fileSize: fileSize,
+      category: category || 'Other',
+      status: 'VERIFIED',
+      uploadedAt: new Date(),
+      uploadedBy: req.user ? req.user.name : 'Staff'
+    };
+
+    if (lead) {
+      lead.preVivaDetails = lead.preVivaDetails || {};
+      lead.preVivaDetails.documents = lead.preVivaDetails.documents || [];
+      lead.preVivaDetails.documents = lead.preVivaDetails.documents.filter(
+        d => (d.name || d.title) !== (docTitle || req.file.originalname)
+      );
+      lead.preVivaDetails.documents.push(docItem);
+      lead.markModified('preVivaDetails');
+      await lead.save();
+
+      await logLeadHistory({
+        lead,
+        performedBy: req.user,
+        actionType: 'DOCUMENT_UPLOADED',
+        remarks: `Document "${docTitle || req.file.originalname}" uploaded by ${req.user ? req.user.name : 'Staff'}. File: ${req.file.filename}`
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Document uploaded successfully',
+      data: {
+        fileUrl: filePath,
+        fileName: req.file.filename,
+        originalName: req.file.originalname,
+        fileSize: fileSize,
+        docItem
+      }
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });

@@ -22,6 +22,7 @@ const {
   recordPaymentBooking,
   recordFinalPayment,
   verifyPreVivaDocs,
+  uploadLeadDocument,
   assignPreVivaVisa,
   evaluatePreVivaCandidate,
   confirmVisaDelay,
@@ -39,6 +40,7 @@ const {
 } = require('../controllers/leadController');
 const { protect, authorize } = require('../middleware/authMiddleware');
 const validateTransferChecklist = require('../middleware/checkTransferChecklist');
+const documentUpload = require('../middleware/documentUploadMiddleware');
 
 // 1. Core Lead Retrieval & Stats
 router.get('/', protect, getLeads);
@@ -69,6 +71,7 @@ router.put('/:id/final-payment', protect, recordFinalPayment);
 
 // 5. Pre-Viva Management Routes (FRD Step 15)
 router.put('/:id/pre-viva-verify', protect, verifyPreVivaDocs);
+router.post('/:id/upload-document', protect, documentUpload.single('document'), uploadLeadDocument);
 router.put('/:id/pre-viva-assign', protect, assignPreVivaVisa);
 router.put('/:id/pre-viva-evaluate', protect, evaluatePreVivaCandidate);
 router.put('/:id/pre-viva-delay', protect, confirmVisaDelay);
