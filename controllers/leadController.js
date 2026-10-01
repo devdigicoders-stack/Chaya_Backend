@@ -1632,7 +1632,14 @@ exports.recordFinalPayment = async (req, res) => {
 // @access  Private (Pre-Viva Manager / Admin)
 exports.verifyPreVivaDocs = async (req, res) => {
   try {
-    const lead = await Lead.findById(req.params.id);
+    const mongoose = require('mongoose');
+    let lead = null;
+    if (mongoose.Types.ObjectId.isValid(req.params.id)) {
+      lead = await Lead.findById(req.params.id);
+    }
+    if (!lead) {
+      lead = await Lead.findOne({ leadId: req.params.id });
+    }
     if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
     lead.preVivaDetails = lead.preVivaDetails || {};
@@ -1669,7 +1676,14 @@ exports.verifyPreVivaDocs = async (req, res) => {
 exports.assignPreVivaVisa = async (req, res) => {
   try {
     const { vivaDate, visaManagerId, visaManagerName, dispatchToVisa, remarks } = req.body;
-    const lead = await Lead.findById(req.params.id);
+    const mongoose = require('mongoose');
+    let lead = null;
+    if (mongoose.Types.ObjectId.isValid(req.params.id)) {
+      lead = await Lead.findById(req.params.id);
+    }
+    if (!lead) {
+      lead = await Lead.findOne({ leadId: req.params.id });
+    }
     if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
     lead.preVivaDetails = lead.preVivaDetails || {};
@@ -1682,7 +1696,6 @@ exports.assignPreVivaVisa = async (req, res) => {
     if (visaManagerName) {
       lead.preVivaDetails.visaManagerName = visaManagerName;
     }
-    const mongoose = require('mongoose');
     if (visaManagerId && mongoose.Types.ObjectId.isValid(visaManagerId)) {
       lead.assignedVisaManager = visaManagerId;
       lead.preVivaDetails.assignedVisaManager = visaManagerId;
