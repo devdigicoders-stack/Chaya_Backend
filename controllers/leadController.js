@@ -340,8 +340,13 @@ exports.deleteLead = async (req, res) => {
 // @access  Private
 exports.toggleLeadHold = async (req, res) => {
   try {
-    const { isHold, reason } = req.body;
-    const lead = await Lead.findById(req.params.id);
+    let lead = null;
+    if (mongoose.Types.ObjectId.isValid(req.params.id)) {
+      lead = await Lead.findById(req.params.id);
+    }
+    if (!lead) {
+      lead = await Lead.findOne({ leadId: req.params.id });
+    }
     if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
     lead.isHold = isHold !== undefined ? isHold : !lead.isHold;
