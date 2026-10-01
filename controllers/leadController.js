@@ -650,7 +650,16 @@ exports.getLeads = async (req, res) => {
         ]
       });
     } else if (req.user.role === 'VISA_MANAGER') {
-      conditions.push({ currentStage: 'VISA_PROCESSING' });
+      conditions.push({
+        $or: [
+          { currentStage: 'VISA_PROCESSING' },
+          { 'visaDetails.status': { $in: ['READY_TO_APPLY', 'SUBMITTED', 'PROCESSING', 'APPROVED', 'DELAYED', 'REJECTED'] } },
+          { 'preVivaDetails.assignedVisaManager': req.user._id },
+          { 'preVivaDetails.status': 'READY_FOR_VISA' },
+          { 'preVivaDetails.status': 'CLEARED' },
+          { 'status': 'ASSIGNED_TO_VISA_MANAGER' }
+        ]
+      });
     } else if (req.user.role === 'VIVA_MANAGER') {
       conditions.push({ 
         $or: [
@@ -1989,7 +1998,11 @@ exports.applyVisa = async (req, res) => {
       appliedOn, expectedDate, remarks 
     } = req.body;
     
-    const lead = await Lead.findById(req.params.id);
+    const isValidId = mongoose.Types.ObjectId.isValid(req.params.id);
+    let lead = isValidId ? await Lead.findById(req.params.id) : null;
+    if (!lead) {
+      lead = await Lead.findOne({ leadId: req.params.id });
+    }
     if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
     lead.visaDetails = lead.visaDetails || {};
@@ -2039,7 +2052,11 @@ exports.applyVisa = async (req, res) => {
 exports.updateVisaStatus = async (req, res) => {
   try {
     const { status, expectedDate, remarks, stampedDate } = req.body;
-    const lead = await Lead.findById(req.params.id);
+    const isValidId = mongoose.Types.ObjectId.isValid(req.params.id);
+    let lead = isValidId ? await Lead.findById(req.params.id) : null;
+    if (!lead) {
+      lead = await Lead.findOne({ leadId: req.params.id });
+    }
     if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
     lead.visaDetails = lead.visaDetails || {};
@@ -2116,7 +2133,11 @@ exports.updateVisaStatus = async (req, res) => {
 exports.verifyVisaDocuments = async (req, res) => {
   try {
     const { verifiedDocuments } = req.body;
-    const lead = await Lead.findById(req.params.id);
+    const isValidId = mongoose.Types.ObjectId.isValid(req.params.id);
+    let lead = isValidId ? await Lead.findById(req.params.id) : null;
+    if (!lead) {
+      lead = await Lead.findOne({ leadId: req.params.id });
+    }
     if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
     lead.visaDetails = lead.visaDetails || {};
@@ -2147,7 +2168,11 @@ exports.verifyVisaDocuments = async (req, res) => {
 exports.updateVisaTracking = async (req, res) => {
   try {
     const { stage, event, remarks, isDelayed } = req.body;
-    const lead = await Lead.findById(req.params.id);
+    const isValidId = mongoose.Types.ObjectId.isValid(req.params.id);
+    let lead = isValidId ? await Lead.findById(req.params.id) : null;
+    if (!lead) {
+      lead = await Lead.findOne({ leadId: req.params.id });
+    }
     if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
     lead.visaDetails = lead.visaDetails || {};
