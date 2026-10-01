@@ -74,6 +74,14 @@ const LeadSchema = new mongoose.Schema({
     reportUrl: { type: String, default: '' },
     validity: { type: String, default: '' },
     remarks: { type: String, default: '' },
+    tests: [{
+      id: { type: String },
+      title: { type: String },
+      subtitle: { type: String, default: '' },
+      status: { type: String, enum: ['Pending', 'In Process', 'Completed'], default: 'Pending' },
+      remarks: { type: String, default: '' },
+      updatedAt: { type: Date, default: Date.now }
+    }],
     updatedAt: { type: Date }
   },
 

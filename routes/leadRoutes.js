@@ -16,6 +16,8 @@ const {
   updateLocationConfirmation,
   submitInterviewResult,
   scheduleMedicalAppointment,
+  checkInMedicalCandidate,
+  saveMedicalTests,
   submitMedicalResult,
   recordPaymentBooking,
   recordFinalPayment,
@@ -59,6 +61,8 @@ router.put('/:id/interview-result', protect, authorize('ADMIN', 'INTERVIEW_PANEL
 
 // 4. Medical & Payment Booking Routes (FRD Section 11 & 12)
 router.put('/:id/medical-schedule', protect, scheduleMedicalAppointment);
+router.put('/:id/medical-checkin', protect, checkInMedicalCandidate);
+router.put('/:id/medical-tests', protect, saveMedicalTests);
 router.put('/:id/medical-result', protect, submitMedicalResult);
 router.put('/:id/payment-booking', protect, recordPaymentBooking);
 router.put('/:id/final-payment', protect, recordFinalPayment);

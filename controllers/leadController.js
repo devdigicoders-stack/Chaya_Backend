@@ -624,7 +624,14 @@ exports.getLeads = async (req, res) => {
         });
       }
     } else if (req.user.role === 'MEDICAL_DEPT') {
-      conditions.push({ currentStage: 'MEDICAL_PROCESS' });
+      conditions.push({
+        $or: [
+          { currentStage: 'MEDICAL_PROCESS' },
+          { 'medicalDetails.status': { $in: ['SCHEDULED', 'FIT', 'UNFIT'] } },
+          { selectionMode: 'DIRECT_CV' },
+          { 'initialInterview.status': 'PASS' }
+        ]
+      });
     } else if (req.user.role === 'ACCOUNTS') {
       conditions.push({ currentStage: 'ACCOUNTS_COLLECTION' });
     } else if (req.user.role === 'PRE_VISA_MANAGER') {
@@ -1340,6 +1347,82 @@ exports.scheduleMedicalAppointment = async (req, res) => {
     res.json({
       success: true,
       message: `Medical appointment scheduled for ${lead.candidateName} at ${assignedCenter}`,
+      data: lead
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Check-in candidate for Medical Exam (marks SCHEDULED / In Process)
+// @route   PUT /api/leads/:id/medical-checkin
+// @access  Private (Medical Team, Admin)
+exports.checkInMedicalCandidate = async (req, res) => {
+  try {
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Candidate lead not found' });
+
+    if (!lead.medicalDetails) lead.medicalDetails = {};
+    lead.medicalDetails.status = 'SCHEDULED';
+    lead.medicalDetails.appointmentDate = lead.medicalDetails.appointmentDate || new Date();
+    lead.medicalDetails.updatedAt = new Date();
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'MEDICAL_RESULT',
+      fromStage: lead.currentStage,
+      toStage: lead.currentStage,
+      remarks: `Candidate checked in at Medical Desk (marked In Process) by ${req.user.name || 'Medical Officer'}`
+    });
+
+    res.json({
+      success: true,
+      message: `${lead.candidateName} successfully checked in`,
+      data: lead
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Save Medical Examination Tests breakdown & remarks
+// @route   PUT /api/leads/:id/medical-tests
+// @access  Private (Medical Team, Admin)
+exports.saveMedicalTests = async (req, res) => {
+  try {
+    const { tests, remarks } = req.body;
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Candidate lead not found' });
+
+    if (!lead.medicalDetails) lead.medicalDetails = {};
+    if (tests && Array.isArray(tests)) {
+      lead.medicalDetails.tests = tests;
+    }
+    if (remarks !== undefined) {
+      lead.medicalDetails.remarks = remarks;
+    }
+    if (lead.medicalDetails.status === 'PENDING') {
+      lead.medicalDetails.status = 'SCHEDULED';
+    }
+    lead.medicalDetails.updatedAt = new Date();
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'MEDICAL_RESULT',
+      fromStage: lead.currentStage,
+      toStage: lead.currentStage,
+      remarks: `Medical examination tests progress saved (${tests ? tests.length : 0} tests recorded). Doctor remarks: ${remarks || 'In progress'}`
+    });
+
+    res.json({
+      success: true,
+      message: 'Medical examination tests progress saved successfully',
       data: lead
     });
   } catch (error) {
