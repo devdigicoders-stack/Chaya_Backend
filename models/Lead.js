@@ -217,7 +217,7 @@ const LeadSchema = new mongoose.Schema({
     transactions: [
       {
         receiptNo: { type: String, required: true },
-        type: { type: String, enum: ['PAYMENT', 'REFUND', 'REVERSAL', 'ADJUSTMENT'], default: 'PAYMENT' },
+        type: { type: String, enum: ['PAYMENT', 'REFUND', 'REVERSAL', 'ADJUSTMENT', 'ADVANCE', 'STAGE_PAYMENT', 'FINAL', 'MEDICAL', 'VISA'], default: 'PAYMENT' },
         head: { type: String, default: 'ADVANCE' },
         amount: { type: Number, required: true },
         paymentMode: { type: String, default: 'UPI' },
