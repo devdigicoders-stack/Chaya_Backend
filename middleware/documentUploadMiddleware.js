@@ -21,20 +21,20 @@ const storage = multer.diskStorage({
   }
 });
 
-// File filter (Images, PDFs, docs)
+// File filter (Images, PDFs, docs, Audio, Video recordings)
 const fileFilter = (req, file, cb) => {
-  const allowedExtensions = /jpeg|jpg|png|webp|pdf|doc|docx/;
+  const allowedExtensions = /jpeg|jpg|png|webp|pdf|doc|docx|mp3|wav|m4a|aac|ogg|webm|mp4|mov|mkv|3gp|flac|avi|m4v/;
   const extname = allowedExtensions.test(path.extname(file.originalname).toLowerCase());
   if (extname) {
     return cb(null, true);
   } else {
-    cb(new Error('Only image, PDF, and DOC files are allowed!'));
+    cb(new Error('Only document, image, audio, or video files are allowed!'));
   }
 };
 
 const documentUpload = multer({
   storage,
-  limits: { fileSize: 25 * 1024 * 1024 }, // 25 MB max size
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB max size for videos and recordings
   fileFilter
 });
 
