@@ -642,7 +642,7 @@ exports.updateLocationConfirmation = async (req, res) => {
 // @access  Private
 exports.getLeads = async (req, res) => {
   try {
-    const { stage, status, source, isPassportHolder, isHold, search, callingStaff, medicalDesk, medicalStatus, preVisaDesk, preVivaStatus, visaDesk, visaStatus, placementDesk, placementStatus, cancelledDesk, blacklistedDesk } = req.query;
+    const { stage, status, source, isPassportHolder, isHold, search, callingStaff, medicalDesk, medicalStatus, preVisaDesk, preVivaStatus, visaDesk, visaStatus, placementDesk, placementStatus, cancelledDesk, blacklistedDesk, refundDesk, closureStatus } = req.query;
     const conditions = [];
 
     // Role-based scoping
@@ -692,7 +692,17 @@ exports.getLeads = async (req, res) => {
         ]
       });
     } else if (req.user.role === 'ACCOUNTS') {
-      conditions.push({ currentStage: 'ACCOUNTS_COLLECTION' });
+      if (refundDesk === 'true') {
+        // Accounts full access to refund desk
+      } else {
+        conditions.push({
+          $or: [
+            { currentStage: 'ACCOUNTS_COLLECTION' },
+            { 'billBook.isLedgerOpen': true },
+            { closureStatus: { $in: ['REFUND_PENDING', 'FINANCIAL_PENDING'] } }
+          ]
+        });
+      }
     } else if (req.user.role === 'PRE_VISA_MANAGER') {
       conditions.push({
         $or: [
@@ -785,8 +795,21 @@ exports.getLeads = async (req, res) => {
           { holdReason: { $regex: /unfit|blacklist|reject|fake|forged/i } }
         ]
       });
+    } else if (refundDesk === 'true') {
+      conditions.push({
+        $or: [
+          { closureStatus: { $in: ['REFUND_PENDING', 'FINANCIAL_PENDING', 'FINAL_CLOSED', 'CLOSED_NO_ADVANCE'] } },
+          { 'billBook.approvedRefund': { $gt: 0 } },
+          { 'closureDetails.refundPayable': { $gt: 0 } },
+          { currentStage: 'CANCELLED' }
+        ]
+      });
     } else if (stage && stage !== 'ALL' && stage !== 'UNASSIGNED') {
       conditions.push({ currentStage: stage });
+    }
+
+    if (closureStatus && closureStatus !== 'ALL') {
+      conditions.push({ closureStatus });
     }
     if (status && status !== 'ALL') {
       if (status === 'CANCELLED') {
@@ -2975,6 +2998,298 @@ exports.closeLeadFile = async (req, res) => {
     res.status(500).json({ success: false, message: error.message });
   }
 };
+
+// @desc    Process refund payment payout (FRD Section 5 & 9)
+// @route   POST /api/leads/:id/process-refund
+// @access  Private (ACCOUNTS, ADMIN, STAFF_HEAD)
+exports.processRefundPayout = async (req, res) => {
+  try {
+    const { amount, paymentMode, referenceNo, remarks, receiptUrl, bankDetails } = req.body;
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+    const numAmount = Number(amount);
+    if (!numAmount || numAmount <= 0) {
+      return res.status(400).json({ success: false, message: 'Valid refund amount required' });
+    }
+
+    if (!lead.billBook) lead.billBook = { transactions: [], approvedRefund: 0, refundPaid: 0, refundBalance: 0 };
+    if (!lead.billBook.transactions) lead.billBook.transactions = [];
+
+    const receiptNo = `REF-${Math.floor(100000 + Math.random() * 900000)}`;
+
+    const newTx = {
+      receiptNo,
+      type: 'REFUND',
+      head: 'REFUND',
+      amount: numAmount,
+      paymentMode: paymentMode || 'BANK_TRANSFER',
+      referenceNo: referenceNo || '',
+      status: 'VERIFIED',
+      receiptUrl: receiptUrl || '',
+      receivedBy: req.user.name,
+      verifiedBy: req.user.name,
+      verifiedAt: new Date(),
+      remarks: remarks || 'Refund disbursed to candidate',
+      date: new Date()
+    };
+
+    lead.billBook.transactions.push(newTx);
+
+    // Update refund totals
+    lead.billBook.refundPaid = (lead.billBook.refundPaid || 0) + numAmount;
+    const approved = lead.billBook.approvedRefund || lead.closureDetails?.refundPayable || numAmount;
+    lead.billBook.approvedRefund = approved;
+    lead.billBook.refundBalance = Math.max(0, approved - lead.billBook.refundPaid);
+
+    if (!lead.closureDetails) lead.closureDetails = {};
+    lead.closureDetails.refundPaid = lead.billBook.refundPaid;
+    lead.closureDetails.refundBalance = lead.billBook.refundBalance;
+
+    if (bankDetails) {
+      lead.closureDetails.bankDetails = {
+        accountHolderName: bankDetails.accountHolderName || '',
+        bankName: bankDetails.bankName || '',
+        accountNumber: bankDetails.accountNumber || '',
+        ifscCode: bankDetails.ifscCode || '',
+        upiId: bankDetails.upiId || ''
+      };
+    }
+
+    if (lead.billBook.refundBalance === 0) {
+      lead.closureStatus = 'FINAL_CLOSED';
+      lead.closureDetails.settlementDate = new Date();
+    } else {
+      lead.closureStatus = 'REFUND_PENDING';
+    }
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'REFUND_DISBURSED',
+      remarks: `Refund of ₹${numAmount} paid via ${paymentMode || 'BANK_TRANSFER'} (Ref/UTR: ${referenceNo || 'N/A'}). Remaining Refund Balance: ₹${lead.billBook.refundBalance}. Status: ${lead.closureStatus}`
+    });
+
+    res.json({ success: true, message: `Refund of ₹${numAmount} disbursed successfully`, data: lead });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Re-Apply / Move Candidate to New Vacancy / Company (FRD Section 6 & 11)
+// @route   POST /api/leads/:id/re-apply
+// @access  Private
+exports.reapplyCandidate = async (req, res) => {
+  try {
+    const {
+      newCompanyName,
+      newCountry,
+      newTrade,
+      newSalary,
+      reasonForMove,
+      targetStage = 'STAFF_HEAD_HANDLING',
+      advanceAction = 'CARRY_FORWARD',
+      advanceCarriedForward = 0,
+      newServiceFee,
+      remarks = ''
+    } = req.body;
+
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) {
+      return res.status(404).json({ success: false, message: 'Candidate lead not found' });
+    }
+
+    // 1. Initialize applications array if not present
+    if (!Array.isArray(lead.applications)) {
+      lead.applications = [];
+    }
+
+    const currentAppId = lead.currentApplicationId || `APP-${String(lead.applications.length + 1).padStart(2, '0')}`;
+
+    // 2. Build snapshot of the application being archived / moved
+    const prevCompanyName = lead.companyConfirmation?.companyName || lead.tradeDetails?.targetCompany || '';
+    const prevCountry = lead.country || lead.tradeDetails?.targetCountry || '';
+    const prevTrade = lead.trade || lead.tradeDetails?.targetTrade || '';
+    const prevSalary = lead.applicationForm?.expectedSalary || lead.tradeDetails?.salaryOffered || '';
+    const numCarryForward = Number(advanceCarriedForward) || 0;
+
+    const archivedApplication = {
+      applicationId: currentAppId,
+      appliedAt: lead.createdAt || new Date(),
+      closedAt: new Date(),
+      status: 'MOVED',
+      reasonForMove: reasonForMove || 'Candidate re-applied to new vacancy/employer',
+      companyName: prevCompanyName,
+      targetCountry: prevCountry,
+      trade: prevTrade,
+      salaryOffered: prevSalary,
+      stageReached: lead.currentStage,
+      fileType: lead.fileType || 'FRESH',
+      financials: {
+        serviceFee: lead.paymentDetails?.serviceFee || 0,
+        advancePaid: lead.paymentDetails?.advancePaid || 0,
+        totalPaid: lead.paymentDetails?.totalPaid || 0,
+        balanceDue: lead.paymentDetails?.balanceDue || 0,
+        adjustmentCarriedForward: numCarryForward
+      },
+      handledBy: (req.user?.name || req.user?.username || 'Staff'),
+      confirmationsCount: Array.isArray(lead.confirmations) ? lead.confirmations.length : 0,
+      remarks: remarks || `Moved from ${prevCompanyName || 'Old Vacancy'} to ${newCompanyName || 'New Vacancy'}`,
+      archivedSnapshot: {
+        companyConfirmation: lead.companyConfirmation,
+        tradeDetails: lead.tradeDetails,
+        visaDetails: lead.visaDetails,
+        medicalDetails: lead.medicalDetails,
+        paymentDetails: lead.paymentDetails,
+        closureDetails: lead.closureDetails,
+        closureStatus: lead.closureStatus
+      }
+    };
+
+    lead.applications.push(archivedApplication);
+
+    // 3. Increment cycle counter and assign new Application ID
+    const nextCycleNum = lead.applications.length + 1;
+    const newAppId = `APP-${String(nextCycleNum).padStart(2, '0')}`;
+    lead.currentApplicationId = newAppId;
+    lead.totalApplicationsCount = nextCycleNum;
+    lead.isReapply = true;
+    lead.fileType = 'MOVE_FILE';
+
+    // 4. Update Candidate Vacancy Details
+    if (newCountry) lead.country = newCountry;
+    if (newTrade) lead.trade = newTrade;
+    if (!lead.companyConfirmation) lead.companyConfirmation = {};
+    lead.companyConfirmation = {
+      status: 'PENDING',
+      companyName: newCompanyName || '',
+      positionOffered: newTrade || lead.trade,
+      proposalDate: new Date(),
+      acceptanceDate: null,
+      terms: remarks || ''
+    };
+
+    if (newSalary) {
+      if (!lead.applicationForm) lead.applicationForm = {};
+      lead.applicationForm.expectedSalary = newSalary;
+    }
+
+    // 5. Financial Ledger / Bill Book Carry-Forward
+    if (!lead.billBook) {
+      lead.billBook = { totalPayable: 0, totalReceived: 0, balanceDue: 0, transactions: [], charges: [] };
+    }
+
+    if (newServiceFee && Number(newServiceFee) > 0) {
+      const numNewFee = Number(newServiceFee);
+      if (!lead.paymentDetails) lead.paymentDetails = {};
+      lead.paymentDetails.serviceFee = numNewFee;
+      lead.paymentDetails.totalFee = numNewFee;
+      lead.billBook.totalPayable = numNewFee;
+    }
+
+    if (advanceAction === 'CARRY_FORWARD' && numCarryForward > 0) {
+      lead.billBook.transactions.push({
+        transactionId: `TXN-REAPPLY-${Date.now().toString().slice(-6)}`,
+        type: 'STAGE_PAYMENT',
+        amount: numCarryForward,
+        paymentMode: 'INTERNAL_ADJUSTMENT',
+        referenceNo: `REAPPLY-FROM-${currentAppId}`,
+        remarks: `Carried forward ₹${numCarryForward} advance from cycle ${currentAppId} to ${newAppId}`,
+        receivedBy: req.user?.name || 'Accounts Staff',
+        date: new Date(),
+        verified: true,
+        verifiedBy: req.user?.name || 'Accounts Staff',
+        verifiedAt: new Date()
+      });
+
+      lead.billBook.balanceDue = Math.max(0, (lead.billBook.totalPayable || 0) - (lead.billBook.totalReceived || 0));
+    }
+
+    // 6. Reset workflow stage
+    lead.currentStage = targetStage || 'STAFF_HEAD_HANDLING';
+    lead.closureStatus = 'ACTIVE';
+    lead.isHold = false;
+    lead.holdReason = '';
+
+    await lead.save();
+
+    // 7. Audit log in LeadHistory
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'RE_APPLY_INITIATED',
+      remarks: `Candidate re-applied under ${newAppId}. Target: ${newCompanyName || 'Pending Company'} (${newTrade || lead.trade}, ${newCountry || lead.country}). Previous cycle ${currentAppId} archived. Stage set to ${targetStage}.`
+    });
+
+    res.json({
+      success: true,
+      message: `Candidate successfully re-applied under Application ${newAppId}`,
+      data: lead
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Get Candidate Applications & Cross-Matched Records (by Phone/Passport)
+// @route   GET /api/leads/:id/applications
+// @access  Private
+exports.getCandidateApplications = async (req, res) => {
+  try {
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) {
+      return res.status(404).json({ success: false, message: 'Candidate lead not found' });
+    }
+
+    // Active cycle info
+    const currentApp = {
+      applicationId: lead.currentApplicationId || 'APP-01',
+      appliedAt: lead.createdAt,
+      status: lead.closureStatus === 'ACTIVE' || !lead.closureStatus ? 'ACTIVE' : lead.closureStatus,
+      companyName: lead.companyConfirmation?.companyName || lead.tradeDetails?.targetCompany || '',
+      targetCountry: lead.country || '',
+      trade: lead.trade || '',
+      salaryOffered: lead.applicationForm?.expectedSalary || '',
+      currentStage: lead.currentStage,
+      fileType: lead.fileType || 'FRESH',
+      isReapply: !!lead.isReapply,
+      totalPaid: lead.paymentDetails?.totalPaid || lead.paymentDetails?.advancePaid || 0,
+      balanceDue: lead.paymentDetails?.balanceDue || lead.billBook?.balanceDue || 0
+    };
+
+    let crossLinkedLeads = [];
+    const queryConditions = [];
+    if (lead.phone) queryConditions.push({ phone: lead.phone });
+    if (lead.passportNumber && lead.passportNumber !== 'N/A') queryConditions.push({ passportNumber: lead.passportNumber });
+
+    if (queryConditions.length > 0) {
+      crossLinkedLeads = await Lead.find({
+        _id: { $ne: lead._id },
+        $or: queryConditions
+      }).select('candidateName leadId phone passportNumber country trade currentStage closureStatus createdAt').lean();
+    }
+
+    res.json({
+      success: true,
+      data: {
+        candidateName: lead.candidateName,
+        leadId: lead.leadId,
+        passportNumber: lead.passportNumber,
+        phone: lead.phone,
+        currentApplicationId: lead.currentApplicationId || 'APP-01',
+        totalApplicationsCount: lead.totalApplicationsCount || 1,
+        activeApplication: currentApp,
+        archivedApplications: Array.isArray(lead.applications) ? lead.applications : [],
+        crossLinkedLeads
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 
 
 

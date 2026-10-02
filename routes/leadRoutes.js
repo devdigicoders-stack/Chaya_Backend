@@ -47,7 +47,10 @@ const {
   verifyBillBookTransaction,
   addBillBookCharge,
   saveConfirmation,
-  closeLeadFile
+  closeLeadFile,
+  processRefundPayout,
+  reapplyCandidate,
+  getCandidateApplications
 } = require('../controllers/leadController');
 const { protect, authorize } = require('../middleware/authMiddleware');
 const validateTransferChecklist = require('../middleware/checkTransferChecklist');
@@ -117,10 +120,15 @@ router.post('/:id/billbook/charge', protect, addBillBookCharge);
 // 11. 8 Mandatory Confirmations & Audio/Video Recordings (FRD Section 8)
 router.post('/:id/confirmations', protect, saveConfirmation);
 
-// 12. File Closure & Refund Settlement (FRD Section 5)
+// 12. File Closure & Refund Settlement (FRD Section 5 & 9)
 router.put('/:id/close-file', protect, closeLeadFile);
+router.post('/:id/process-refund', protect, authorize('ACCOUNTS', 'ADMIN', 'STAFF_HEAD'), processRefundPayout);
 
-// 13. Lead Editing, Hold & Deletion
+// 13. Re-Apply & Multi-Application Tracking (FRD Section 6 & 11)
+router.post('/:id/re-apply', protect, reapplyCandidate);
+router.get('/:id/applications', protect, getCandidateApplications);
+
+// 14. Lead Editing, Hold & Deletion
 router.put('/:id/hold', protect, toggleLeadHold);
 router.put('/:id/admin-override', protect, authorize('ADMIN'), adminLeadOverride);
 router.put('/:id', protect, updateLead);

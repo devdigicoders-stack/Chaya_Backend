@@ -1,0 +1,256 @@
+Chhaya International Private Limited
+Office Management Application — Developer Requirement Report
+ɞदनांक: 01 अक्टूबर 2026 | संस्करण : 1.0 | उद्देश्य : ऐप बनवाने हेतु कायार्त्मक आवश्यकता ɝरपोटर्
+यह ɝरपोटर् बताए गए Lead-to-Flight workflow पर आधाɝरत है। अɟतɝरक्त तकनीकʏ सुझाव और कायार्लय से तय होने वाली बातें
+अंत में अलग दʍ गई हैं। यह ऐप कʏ आवश्यकता ɝरपोटर् है ; तैयार ऐप नहीं है।
+1. ऐप का उद्देश्य
+एक ही ɡसस्टम में Leads, Calling, Candidate Selection, Medical, Company Confirmation, Advance, File
+Transfer, Visa, Flight और Cancellation/Refund काप्र बंधन करना है। हर Client कʏ वतर्मान ɜȸɟत, ɣजम्मेदार Staff,
+अगला काम, Payment और Documents एक जगह ɞदखें।
+मुख्य ɟनयम : हर Client का एक ही Active File Holder होगा। कोई Client ɟबना ɣजम्मेदार Staff के नहीं रहेगा और कई Staff
+उसे अलग-अलग ɟनदǂश नहीं देंगे।
+2. यूजर एवं अɠधकार
+भूɠमका मुख्य काम एवंप्रस् ताɟवत अɠधकार
+Admin / Director सभी ɝरकॉडर् और ɝरपोटर् देखना; Staff, Roles, Templates
+एवं Settings का ɟनयंत्रण
+Data Controller Leads Import/Add, Duplicate Review,
+Distribution और Allocation Record
+Staff Head टʍम कʏ ɟनगरानी, Advance के बाद File Assignment,
+Problem Files और Cancellation/Refund ɟनणर्य
+Calling Staff अपनी Leads, Calls, Shortlisting, Client Form,
+Selection Follow-up, Medical Confirmation और
+Advance Follow-up
+CV Selection Staff CV Review, Selected/Rejected/Hold Result और
+Selection Proof
+Interview Panel Interview Schedule, Result, Remarks और Medical
+हेतु Selected File भेजना
+Medical Responsible Staff Medical Appointment, Centre, Report एवं Result
+Update; यह अɠधकार मौजूदा Staff को भी ɞदया जा सकता है
+Receiving / Processing Staff Receiving Confirmation, File Move, Re-Apply एवं
+Client Updates
+PRI Visa Manager Updated Information Verify, PRI Confirmation
+और Expected Process/Flight Timeline
+Visa Manager Visa Received, After Visa Confirmation,
+Signature, Video और Ticket/Departure
+Accounts Permission Bill Book, Payment Verification, Refund Entry एवं
+Financial Reports; अलग यूजर या अɠधकृत Staff को ɞदया
+जा सके
+Staff सामान्यतः अपनी Assigned Files ही देखे। टʍम/ɟवभाग के अɟतɝरक्त अɠधकार Admin तय करे। Role के नाम ȸायी हों ;
+कमर्चारी बदलने पर workflow न बदले।
+3. मुख्य	स्क्र	 ʏन
+Dashboard; Leads Inbox; My Leads; Client Form/Profile; CV Selection; Interview Panel; Medical; Com-
+pany Confirmation; Advance; Transfer Inbox/Outbox; File Move/Re-Apply; PRI Visa; Visa/Flight; Can-
+cellation/Refund; Bill Book; Documents/Recordings; Reports; Staff एवं Settings।
+Client Profile में ऊपर नाम, Client ID, Case ID, Mobile, Passport, Stage, Active Holder, Last Contact और
+Next Follow-up ɞदखें। नीचे Documents, Payments, Confirmations और Timeline के अलग Tabs हों।
+1
+
+-- 1 of 5 --
+
+4. पूरा workflow एवं ɡसस्टम ɟनयम
+चरण ऐप में होने वाला काम अगले चरण कʏ शतर्
+1. Leads Entry Data Controller Manual Entry या
+Excel/CSV Import करे; Source
+और Import Batch दजर् हों
+Valid Leads को Staff Assign हो
+2. Distribution ɟकस Staff को ɟकतनी और कौन-सी
+Leads दʍ गईं , समय सɟहत ɝरकॉडर् हो
+Assigned Staff को सूची और
+Notification ɠमले
+3. Shortlisting Call Outcome, Interest, Trade
+और Passport
+Available/Pending/Not
+Available दजर् हो
+Passport Holder कʏ ɟवस्तृत Profile
+बने
+4. Client Form Candidate Details और
+Documents पूरे हों
+CV Selection या Interview Route
+चुना जाए
+5A. CV Selection Selected/Rejected/Hold, Date,
+Remarks और Proof दजर् हो
+केवल Selected Client Medical
+जाए
+5B. Interview Interview Date/Panel,
+Attendance, Pass/Fail/Hold और
+Remarks दजर् हों
+केवल Pass Client Medical जाए
+6. Medical Transfer Medical Staff/Centre,
+Appointment एवं Instructions दजर्
+हों
+इसी चरण से Bill Book शुरू हो
+7. Medical Complete Report Upload; CV, Passport,
+Form, Report, Condition Letter
+कʏ PDF तैयार/Share हो
+Medical Conditions कʏ
+Confirmation Recording जरूरी
+8. Company Confirmation आगे तैयार Client कʏ File Company
+को भेजी जाए; Confirmation ɝरकॉडर्
+हो
+Proposal/Agreement ɞदया औरस्
+वीकार ɟकया जाए
+9. Advance Amount, Payment Mode,
+Reference और Verification दजर् हो
+After Advance PDF एवं
+Conditions Recording हो
+10. File Transfer Staff Head Receiving Staff तय
+करे; Receiving PDF/Recording
+और संपकर् दजर् हो
+Receivingस् वीकार होने पर Active
+Holder बदले
+11. Move/Re-Apply नई Company/Country/Position,
+Charges और Conditions दजर् हों
+नई PDF एवं Client Confirmation
+Recording जरूरी
+12A. Process Confirm Move Confirm होने पर PRI Visa
+Manager को File जाए
+PRI Receiving एवं Confirmation
+हो
+12B. Cannot Move Reason के साथ Staff Head को File
+जाए
+Cancellation/Refund Conditions
+और Timeline तय हो
+13. PRI Visa Client से Call, Updated Details
+Verification, PRI PDF/Recording
+और Expected Timeline दजर् हो
+Visa आने तक Follow-up जारी रहे
+14. Visa Received Visa Upload करके Visa Manager
+को Transfer हो
+After Visa Confirmation,
+Signatures और Video हों
+15. Ticket/Flight Ticket, PNR, Flight Date, Airport
+और Travel Instructions दजर् हों
+वास्तɟवक Departure Confirm होने
+पर Departed Status लगे
+Expected Flight Date और Confirmed Ticket Date अलग Fields हों। केवल अपेɢक्षत तारीख डालने से Ticket
+Booked/Departure Complete न माना जाए।
+5. ɟवशेष ɜȸɟतयाँ एवं File Closure
+• No Advance: Medical Confirmation PDF और Recording सुरɢक्षत होने के बाद File Calling Staff के पास
+Closed / No Advance रहे। Records Delete न हों।
+• Advance, लेɟकन Move नहीं : Staff Head को Reason सɟहत Transfer; Cancellation/Refund Amount,
+Conditions और Date/Timeline दजर् हों।
+• Refund Closure काप्रस् ताɟवत ɟनयंत्रण : Refund बाकʏ रहतेहु ए Refund Pending ɞदखे; पूरा Settlement होने पर
+Final Closed हो। यɞद कायार्लयप्र शासɟनक Closure पहले चाहता है, तो Financial Pending अलग बना रहे।
+2
+
+-- 2 of 5 --
+
+• Selection Rejected/Hold: कारण एवं अगला Follow-up दजर् हो; इसे Medical मेंस् वतः न भेजें।
+• Medical Unfit/Repeat/Pending: पɝरणाम और Next Action दजर् हो। ऐसी File आगे भेजने कʏ अनुमɟत कायार्लय
+कʏ Medical Policy के अनुसार Configurable हो।
+• Reopen: Closed Client लौटे तो अɠधकृत Staff Reason सɟहत Case Reopen या नया Linked Case बनाए;
+पुराना इɟतहास सुरɢक्षत रहे।
+6. Client Form के जरूरी Fields
+पहचान: Client ID, Lead Source, Name, Mobile, Alternate Mobile, Address, District, State, Passport
+Number, Passport Validity।
+रोजगार: Trade, Experience, Preferred Country, Applied Company, Position, Salary एवं Currency, Selec-
+tion Route, Job Conditions।
+प्र
+ɟक्रया : Active Holder, Current Stage, Priority, Last Contact, Next Follow-up, Remarks, Company Con-
+firmation, Proposal Acceptance, Medical एवं Visa Status।
+ɟवȉ: Charges/Heads, Advance Date एवं Amount, Total Received, Total Payable, Balance Due, Ap-
+proved Refund, Refund Paid, Refund Balance।
+प्र
+माण : CV, Passport, Form, Medical Report, Condition Letters, Agreements, Confirmation PDFs,
+Recordings, Visa, Ticket, Signatures, Video एवं Payment Proof।
+एक Client के कई Applications हो सकते हैं। इसɡलए Client ID और Application/Case ID अलग रखें। Re-Apply में पुरानी
+Company, Charges एवं Consent को Overwrite न करें।
+7. File Transfer और ɣजम्मेदारी
+Transfer में From Staff, To Staff, Reason, Current Stage, Pending Tasks, Requested Time, Accepted
+Time और Receiving Proof रहें।प्रस्
+ताɟवतप्र ɟक्रया : Requested → Pending Receiving → Accepted या Returned with Reason। Pending Receiv-
+ing में पुराना Holder ɣजम्मेदार रहे। Accept होने पर ही नया Holder बने और पुराने Staff का सामान्य Editing Access हटे।
+दोनों को Transfer का Record ɞदखे।
+एक File पर एक समय में केवल एक Pending Transfer हो। ɟबना Holder या दो Active Holders वाली ɜȸɟत ɡसस्टम रोके। देर
+सेस् वीकार होने वाले Transfers Staff Head के Dashboard में ɞदखें।
+Client Communication Log में Call Date, Staff, Outcome, Notes और Next Action दजर् हों। Complaint वतर्मान
+Holder एवं Staff Head को ɞदखाई दे। पुराने Staff कʏ पहले कʏ Activities Audit में सुरɢक्षत रहें।
+8. PDF, Recording एवं Confirmation Module
+Templates: Medical Confirmation, Proposal/Agreement, After Advance Confirmation, Receiving
+Confirmation, Re-Apply Confirmation, PRI Visa Confirmation, After Visa Confirmation और Cancella-
+tion/Refund Statement।
+Client Form से Detailsस् वतः भरें। हर PDF में Case ID, Document Type, Version और Created Date रहे। Stage
+अनुसार आवश्यक Documents का Combined PDF बनाया जा सके।
+Generated, Shared और Client Confirmed तीन अलग Status हों। PDF बनना Client को समझाना या उसकʏ सहमɟत
+ɠमलना नहीं माना जाए। Shared Date/Channel और Confirmation Proof अलग दजर् हों।
+पहले संस्करण में PDF Download/Manual Share और Audio/Video Upload हो। Recordingस् वतः Call से Capture
+होगी, ऐसा मानकर Development न ɟकया जाए। Automatic Calling/WhatsApp Recording अलग Integration होगा।
+Failed Upload या Missing Recording पर संबंɠधत Confirmation Complete न हो।
+9. Bill Book एवं Payment Module
+Medical Referral से Client का Financial Ledger खुल जाए। Ledger बनना Payment Received नहीं माना जाए।प्रत् येक
+वास्तɟवक Payment कʏ अलग Receipt और Unique Number हो।
+Charges configurable हों : Medical, Processing, Verification, Advance, Visa, Ticket, Service एवं अन्यस्
+वीकृत Heads। Amounts इस ɝरपोटर् में Fixed नहीं हैं। कायार्लय लागू Fee Policy देगा।
+3
+
+-- 3 of 5 --
+
+Payment Entry: Amount, Date, Mode, Reference/UTR, Received By, Proof और Verified By। Pending
+Verification और Verified Payment अलग ɞदखें। Refund भी अलग Transaction हो; पुराना Payment Delete न करें।
+गलत Entry का कारण सɟहत Reversal/Correction हो।
+गणना: Balance Due = Approved Payable − Net Amount Applied; Refund Balance = Approved Re-
+fund − Refund Paid। Refund, Charge Revision और Re-Apply Adjustment अलग Entries हों , ताɟक Double
+Counting न हो।
+Cancellations में Total Received, Approved Deductions, Refund Payable, Promised Date, Actual Re-
+fund और Proof ɞदखें। Zero Refund Settlement मेंस् वीकृत कारण हो। GST/Tax Invoice Format और Tax Rules
+कायार्लय/Accountsद्व ारा ɞदए जाएँ ; Developer अनुमान से लागू न करे।
+10. Dashboard, Alerts एवं Reports
+Director Dashboard: Total Leads, Assigned/Unassigned, Shortlisted, Passport Holders, Selection
+Pending/Selected, Medical Pending/Complete, No Advance, Advance Received, Move Pending, PRI
+Processing, Visa Received, Flight Scheduled, Departed और Refund Pending।
+Staff Dashboard: My Files, Today Follow-ups, Missed Follow-ups, Pending Confirmations, Incoming
+Transfers और Overdue Tasks।
+Alerts: Missing Documents, Pending Recording, Pending Transfer Acceptance, Client से तय अवɠध तक
+संपकर् नहीं , Refund Due/Overdue और Upcoming Flight। Reminder कʏ अवɠध Admin तय करे; ɝरपोटर् कोई नई ɟनɢȮत
+समय-सीमा ɟनधार्ɝरत नहीं करती।
+Reports: Staff-wise Lead Allocation/Conversion, Stage-wise File Ageing, Country/Company-wise
+Cases, Collections, Outstanding, Refunds, Transfers, Complaints और Departures। Date, Staff, Coun-
+try, Company, Trade एवं Status से Filter; PDF/Excel Export हो। Lead Conversion में Unique Client और
+Case Count अलग ɞदखें।
+11. सुरक्षा एवं तकनीकʏ सुझाव
+पहले संस्करण के ɡलए Mobile और Desktop पर चलने वाला Responsive Web Appप्रस् ताɟवत है। Android/iOS Native
+App अलग Scope में रखा जा सकता है। ɫहʌदʍ/English Labels, Search और Date/Amount का ȺȲ Format हो।
+Role-based Access, Secure Login, Private Document Storage, Controlled Downloads, Automated
+Backups और Restore कʏ जाँच जरूरी हो। Sensitive Passport/Medical Files सावर्जɟनक Links पर न रखे जाएँ।
+ɟकसनेक् या बदला , कब बदला, पुराना और नया Valueक् या था —Audit Log बने। सामान्य Staff Payments और History ȸायीरू
+प से Delete न कर सके। Staff Deactivate करने से पहले उसकʏ Active Files Reassign हों।
+Mobile/Passport Duplicate Warning हो; Shared Family Number होने पर Review संभव हो। एक ही Payment
+Reference दोबारा डालने पर Warning ɠमले।
+12. Development Scope
+पहला संस्करण — आवश्यक : Login/Roles, Lead Import/Assignment, Client Form, Selection, Medical, पूरा File
+Workflow, Transfers, PDF Templates, Recording Upload, Bill Book, Refund, Dashboards, Reports और
+Audit Trail।
+बाद का वैकɜल्पक संस्करण : WhatsApp Business API, Gmail Import, Automatic Messaging, Telephony Inte-
+gration, Client Portal, E-sign और Incentive/Payroll Module। इनकʏ अलग लागत, अनुमɟत और सेवा-ɟनभर्रता बताई
+जाए। मौजूदा अनुरोध में Incentive Rules या Payroll कʏ गणना तय नहीं कʏ गई है।
+13. Developer Acceptance Checklist
+1. Import में Duplicate Lead ɞदखे और Assignment History सुरɢक्षत हो।
+2. CV Selected और Interview Passed दोनों Routes Medical तक अलग-अलग काम करें।
+3. Medical Referral पर Bill Book खुले, लेɟकन ɟबना Transaction के Collection न ɞदखे।
+4. जरूरी Confirmation PDF/Recording के ɟबना संबंɠधत चरण Complete न हो।
+5. Pending Transfer में पुराना Holder, Accepted Transfer में केवल नया Holder Active हो।
+6. No Advance File Calling Staff पर बंद हो और History उपलȤ रहे।
+7. Re-Apply में नई Conditions कʏ Confirmation हो; पुराना Version सुरɢक्षत रहे।
+8. Partial Refund में Balance ɞदखे; पूरा Refund होने तक Financial Pending बना रहे।
+9. केवल Ticket बनने से Departure Complete न हो।
+4
+
+-- 4 of 5 --
+
+10. Unauthorized Staffदू सरे ɟवभाग कʏ Private Files/Payments Edit न कर सके।
+11. Reports के Totals Sample Client Ledgers से ɠमलें।
+12. Backup से Documents और Records Restore करके ɞदखाए जाएँ।
+14. Development शुरू करने से पहले कायार्लयद्व ारा तय होने वाली बातें
+• कौन-कौन Staff कौन-सा Role संभालेंगे और Accounts Verification कौन करेगा।
+• Client Form, PDF Templates, Conditions और Bill/Receipt के Approved Samples।
+• लागू Charges, Tax Treatment, Refund Approval और Signature कʏप्र ɟक्रया।
+• Lead Reclaim, Medical Result, Follow-up और Transfer Escalation कʏ समय-सीमाएँ।
+• PDF/Recording Manual Upload पयार्प्त है या Integrations भी चाɟहए।
+• पुराने Records कʏ संख्या , Import Format, अपेɢक्षत User Count और Storage जरूरत।
+• Refund Pending रहतेहु एप्र शासɟनक File Closure का ɟनयम।
+डेवलपर से Module-wise Cost, Milestones, Demo/UAT, Hosting एवं Storage Charges, Backup, Mainte-
+nance, Source Code Handover, Admin Credentials और Data Export कʏ शतǃ ɡलɤखत में ली जाएँ।
+5
+
+-- 5 of 5 --
+

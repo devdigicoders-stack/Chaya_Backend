@@ -419,7 +419,42 @@ const LeadSchema = new mongoose.Schema({
   },
 
   isHold: { type: Boolean, default: false },
-  holdReason: { type: String, default: '' }
+  holdReason: { type: String, default: '' },
+
+  // FRD Section 6 & 11: Multi-Application & Re-Apply Tracking System
+  // One candidate can have multiple applications across time without overwriting prior history
+  currentApplicationId: { type: String, default: 'APP-01' },
+  totalApplicationsCount: { type: Number, default: 1 },
+  isReapply: { type: Boolean, default: false },
+
+  applications: [{
+    applicationId: { type: String, required: true },
+    appliedAt: { type: Date, default: Date.now },
+    closedAt: { type: Date, default: null },
+    status: {
+      type: String,
+      enum: ['ACTIVE', 'COMPLETED', 'CANCELLED', 'REAPPLIED', 'MOVED', 'ON_HOLD'],
+      default: 'ACTIVE'
+    },
+    reasonForMove: { type: String, default: '' },
+    companyName: { type: String, default: '' },
+    targetCountry: { type: String, default: '' },
+    trade: { type: String, default: '' },
+    salaryOffered: { type: String, default: '' },
+    stageReached: { type: String, default: 'CALLING_QUEUE' },
+    fileType: { type: String, default: 'FRESH' },
+    financials: {
+      serviceFee: { type: Number, default: 0 },
+      advancePaid: { type: Number, default: 0 },
+      totalPaid: { type: Number, default: 0 },
+      balanceDue: { type: Number, default: 0 },
+      adjustmentCarriedForward: { type: Number, default: 0 }
+    },
+    handledBy: { type: String, default: '' },
+    confirmationsCount: { type: Number, default: 0 },
+    remarks: { type: String, default: '' },
+    archivedSnapshot: { type: mongoose.Schema.Types.Mixed, default: {} }
+  }]
 }, { timestamps: true });
 
 module.exports = mongoose.model('Lead', LeadSchema);
