@@ -467,8 +467,15 @@ exports.transferLeadStage = async (req, res) => {
 
     if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
+    // Stage normalization for legacy/mobile client payloads
+    let normalizedToStage = toStage;
+    if (toStage === 'MEDICAL') normalizedToStage = 'MEDICAL_PROCESS';
+    if (toStage === 'INTERVIEW') normalizedToStage = 'INITIAL_INTERVIEW';
+    if (toStage === 'VISA') normalizedToStage = 'VISA_PROCESSING';
+    if (toStage === 'VIVA') normalizedToStage = 'VIVA_PLACEMENT';
+
     const prevStage = lead.currentStage;
-    lead.currentStage = toStage;
+    lead.currentStage = normalizedToStage;
 
     if (selectionMode) {
       lead.selectionMode = selectionMode;
@@ -476,7 +483,7 @@ exports.transferLeadStage = async (req, res) => {
 
     if (fileType) {
       lead.fileType = fileType;
-    } else if (toStage === 'PRE_VISA' && (!lead.fileType || lead.fileType === 'NOT_SET')) {
+    } else if (normalizedToStage === 'PRE_VISA' && (!lead.fileType || lead.fileType === 'NOT_SET')) {
       lead.fileType = 'DIRECT_FILE'; // Transferred directly to Pre-Viva stage (FRD Section 14)
     }
 
@@ -487,12 +494,12 @@ exports.transferLeadStage = async (req, res) => {
       performedBy: req.user,
       actionType: 'STAGE_TRANSFERRED',
       fromStage: prevStage,
-      toStage: toStage,
+      toStage: normalizedToStage,
       completedChecklist: completedChecklist || [],
-      remarks: remarks || `Transferred stage from ${prevStage} to ${toStage}${lead.fileType !== 'NOT_SET' ? ` (${lead.fileType})` : ''}`
+      remarks: remarks || `Transferred stage from ${prevStage} to ${normalizedToStage}${lead.fileType !== 'NOT_SET' ? ` (${lead.fileType})` : ''}`
     });
 
-    res.json({ success: true, message: `Lead transferred to ${toStage}`, data: lead });
+    res.json({ success: true, message: `Lead transferred to ${normalizedToStage}`, data: lead });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
