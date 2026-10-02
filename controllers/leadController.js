@@ -371,7 +371,7 @@ exports.toggleLeadHold = async (req, res) => {
 // @access  Private (Staff Head / Admin)
 exports.assignLeadsToCallingStaff = async (req, res) => {
   try {
-    const { leadIds, callingStaffId } = req.body;
+    const { leadIds, callingStaffId, confirmReassign } = req.body;
 
     if (!leadIds || !Array.isArray(leadIds) || leadIds.length === 0) {
       return res.status(400).json({ success: false, message: 'Please provide leadIds array to assign' });
@@ -386,11 +386,56 @@ exports.assignLeadsToCallingStaff = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid Calling Staff selected' });
     }
 
-    const leads = await Lead.find({ _id: { $in: leadIds } });
+    const leads = await Lead.find({ _id: { $in: leadIds } }).populate('assignedCallingStaff', 'name email');
+    if (!leads.length) {
+      return res.status(404).json({ success: false, message: 'No matching leads found' });
+    }
+
+    // Check Case A: Already assigned to the EXACT SAME staff member
+    const alreadySameStaff = leads.filter(l => 
+      l.assignedCallingStaff && l.assignedCallingStaff._id.toString() === callingStaffUser._id.toString()
+    );
+
+    if (alreadySameStaff.length === leads.length) {
+      return res.status(400).json({
+        success: false,
+        alreadySame: true,
+        message: `Already Assigned: All selected lead(s) are already assigned to ${callingStaffUser.name}. Reassignment to the same officer is not permitted.`
+      });
+    }
+
+    // Check Case B: Already assigned to ANOTHER staff member (Needs Reassignment confirmation)
+    const assignedOtherStaff = leads.filter(l => 
+      l.assignedCallingStaff && l.assignedCallingStaff._id.toString() !== callingStaffUser._id.toString()
+    );
+
+    if (assignedOtherStaff.length > 0 && !confirmReassign) {
+      const sampleNames = assignedOtherStaff
+        .slice(0, 3)
+        .map(l => `${l.candidateName || l.name || 'Candidate'} (currently with ${l.assignedCallingStaff?.name || 'Staff'})`)
+        .join(', ');
+
+      return res.status(409).json({
+        success: false,
+        requiresConfirmation: true,
+        alreadyAssignedCount: assignedOtherStaff.length,
+        alreadySameCount: alreadySameStaff.length,
+        message: `${assignedOtherStaff.length} lead(s) are already assigned to other staff members (${sampleNames}${assignedOtherStaff.length > 3 ? '...' : ''}). Do you want to reassign them to ${callingStaffUser.name}?`
+      });
+    }
+
     const updatedLeads = [];
 
     for (const lead of leads) {
+      // If already assigned to the same staff, skip without error
+      if (lead.assignedCallingStaff && lead.assignedCallingStaff._id.toString() === callingStaffUser._id.toString()) {
+        continue;
+      }
+
       const prevStage = lead.currentStage;
+      const prevStaffName = lead.assignedCallingStaff?.name || null;
+      const isReassign = Boolean(lead.assignedCallingStaff);
+
       lead.assignedCallingStaff = callingStaffUser._id;
       if (req.user.role === 'STAFF_HEAD') {
         lead.assignedStaffHead = req.user._id;
@@ -401,10 +446,12 @@ exports.assignLeadsToCallingStaff = async (req, res) => {
       await logLeadHistory({
         lead,
         performedBy: req.user,
-        actionType: 'LEAD_ASSIGNED',
+        actionType: isReassign ? 'LEAD_REASSIGNED' : 'LEAD_ASSIGNED',
         fromStage: prevStage,
         toStage: 'CALLING_SCREENING',
-        remarks: `Assigned lead to Calling Staff: ${callingStaffUser.name}`
+        remarks: isReassign
+          ? `Reassigned lead from ${prevStaffName || 'previous staff'} to Calling Staff: ${callingStaffUser.name}`
+          : `Assigned lead to Calling Staff: ${callingStaffUser.name}`
       });
 
       updatedLeads.push(lead);
@@ -412,7 +459,7 @@ exports.assignLeadsToCallingStaff = async (req, res) => {
 
     res.json({
       success: true,
-      message: `Successfully assigned ${updatedLeads.length} leads to Calling Staff (${callingStaffUser.name})`,
+      message: `Successfully ${assignedOtherStaff.length > 0 ? 'reassigned' : 'assigned'} ${updatedLeads.length} leads to Calling Staff (${callingStaffUser.name})`,
       data: updatedLeads
     });
   } catch (error) {
