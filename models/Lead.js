@@ -168,20 +168,10 @@ const LeadSchema = new mongoose.Schema({
     {
       docType: { 
         type: String, 
-        enum: [
-          'MEDICAL_CONFIRMATION',
-          'PROPOSAL_AGREEMENT',
-          'AFTER_ADVANCE_CONFIRMATION',
-          'RECEIVING_CONFIRMATION',
-          'RE_APPLY_CONFIRMATION',
-          'PRI_VISA_CONFIRMATION',
-          'AFTER_VISA_CONFIRMATION',
-          'CANCELLATION_REFUND_STATEMENT'
-        ],
         required: true
       },
       title: { type: String, default: '' },
-      status: { type: String, enum: ['GENERATED', 'SHARED', 'CLIENT_CONFIRMED'], default: 'GENERATED' },
+      status: { type: String, enum: ['GENERATED', 'SHARED', 'CLIENT_CONFIRMED', 'NOT_STARTED'], default: 'GENERATED' },
       version: { type: Number, default: 1 },
       generatedAt: { type: Date, default: Date.now },
       sharedAt: { type: Date, default: null },
@@ -189,7 +179,7 @@ const LeadSchema = new mongoose.Schema({
       confirmedAt: { type: Date, default: null },
       pdfUrl: { type: String, default: '' },
       recordingUrl: { type: String, default: '' },
-      recordingType: { type: String, enum: ['AUDIO', 'VIDEO', 'NONE'], default: 'NONE' },
+      recordingType: { type: String, default: 'CALL_RECORDING' },
       remarks: { type: String, default: '' },
       handledBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
       handledByName: { type: String, default: 'Staff' }
