@@ -43,7 +43,41 @@ const LeadSchema = new mongoose.Schema({
     default: 'UNASSIGNED'
   },
 
-  // Assignees
+  // Assignees & Active File Responsibility (FRD Section 1 & 7)
+  activeHolder: {
+    user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    name: { type: String, default: 'Unassigned' },
+    role: { type: String, default: 'NONE' },
+    assignedAt: { type: Date, default: Date.now }
+  },
+  pendingTransfer: {
+    hasPending: { type: Boolean, default: false },
+    fromUser: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    fromUserName: { type: String, default: '' },
+    toUser: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    toUserName: { type: String, default: '' },
+    toRole: { type: String, default: '' },
+    toStage: { type: String, default: '' },
+    reason: { type: String, default: '' },
+    pendingTasks: { type: String, default: '' },
+    requestedAt: { type: Date, default: null },
+    status: { type: String, enum: ['NONE', 'PENDING', 'ACCEPTED', 'RETURNED'], default: 'NONE' },
+    returnReason: { type: String, default: '' }
+  },
+  closureStatus: {
+    type: String,
+    enum: ['ACTIVE', 'CLOSED_NO_ADVANCE', 'REFUND_PENDING', 'FINANCIAL_PENDING', 'FINAL_CLOSED'],
+    default: 'ACTIVE'
+  },
+  closureDetails: {
+    closedAt: { type: Date },
+    reason: { type: String, default: '' },
+    closedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    refundPayable: { type: Number, default: 0 },
+    refundPaid: { type: Number, default: 0 },
+    refundBalance: { type: Number, default: 0 },
+    settlementDate: { type: Date }
+  },
   assignedStaffHead: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   assignedCallingStaff: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   assignedInterviewPanel: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
@@ -111,6 +145,89 @@ const LeadSchema = new mongoose.Schema({
         receiptNo: { type: String },
         remarks: { type: String },
         recordedBy: { type: String },
+        date: { type: Date, default: Date.now }
+      }
+    ]
+  },
+
+  // Step 8: Company Confirmation & Proposal/Agreement (FRD Section 4, Step 8)
+  companyConfirmation: {
+    status: { type: String, enum: ['PENDING', 'PROPOSAL_SENT', 'AGREEMENT_ACCEPTED', 'REJECTED'], default: 'PENDING' },
+    companyName: { type: String, default: '' },
+    positionOffered: { type: String, default: '' },
+    proposalDate: { type: Date, default: null },
+    acceptanceDate: { type: Date, default: null },
+    terms: { type: String, default: '' },
+    agreementPdfUrl: { type: String, default: '' },
+    recordingUrl: { type: String, default: '' },
+    updatedAt: { type: Date, default: null }
+  },
+
+  // 8 Mandatory PDF & Recording Confirmations (FRD Section 8)
+  confirmations: [
+    {
+      docType: { 
+        type: String, 
+        enum: [
+          'MEDICAL_CONFIRMATION',
+          'PROPOSAL_AGREEMENT',
+          'AFTER_ADVANCE_CONFIRMATION',
+          'RECEIVING_CONFIRMATION',
+          'RE_APPLY_CONFIRMATION',
+          'PRI_VISA_CONFIRMATION',
+          'AFTER_VISA_CONFIRMATION',
+          'CANCELLATION_REFUND_STATEMENT'
+        ],
+        required: true
+      },
+      title: { type: String, default: '' },
+      status: { type: String, enum: ['GENERATED', 'SHARED', 'CLIENT_CONFIRMED'], default: 'GENERATED' },
+      version: { type: Number, default: 1 },
+      generatedAt: { type: Date, default: Date.now },
+      sharedAt: { type: Date, default: null },
+      sharedChannel: { type: String, default: 'WHATSAPP' },
+      confirmedAt: { type: Date, default: null },
+      pdfUrl: { type: String, default: '' },
+      recordingUrl: { type: String, default: '' },
+      recordingType: { type: String, enum: ['AUDIO', 'VIDEO', 'NONE'], default: 'NONE' },
+      remarks: { type: String, default: '' },
+      handledBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      handledByName: { type: String, default: 'Staff' }
+    }
+  ],
+
+  // Step 6-9: Formal Bill Book & Financial Ledger (FRD Section 9)
+  billBook: {
+    isLedgerOpen: { type: Boolean, default: false },
+    openedAt: { type: Date, default: null },
+    approvedPayable: { type: Number, default: 0 },
+    totalReceived: { type: Number, default: 0 },
+    balanceDue: { type: Number, default: 0 },
+    approvedRefund: { type: Number, default: 0 },
+    refundPaid: { type: Number, default: 0 },
+    refundBalance: { type: Number, default: 0 },
+    charges: [
+      {
+        head: { type: String, enum: ['MEDICAL', 'PROCESSING', 'VERIFICATION', 'ADVANCE', 'VISA', 'TICKET', 'SERVICE', 'OTHER'], default: 'SERVICE' },
+        amount: { type: Number, required: true },
+        description: { type: String, default: '' },
+        addedAt: { type: Date, default: Date.now }
+      }
+    ],
+    transactions: [
+      {
+        receiptNo: { type: String, required: true },
+        type: { type: String, enum: ['PAYMENT', 'REFUND', 'REVERSAL', 'ADJUSTMENT'], default: 'PAYMENT' },
+        head: { type: String, default: 'ADVANCE' },
+        amount: { type: Number, required: true },
+        paymentMode: { type: String, default: 'UPI' },
+        referenceNo: { type: String, default: '' },
+        status: { type: String, enum: ['PENDING_VERIFICATION', 'VERIFIED'], default: 'PENDING_VERIFICATION' },
+        receiptUrl: { type: String, default: '' },
+        receivedBy: { type: String, default: '' },
+        verifiedBy: { type: String, default: '' },
+        verifiedAt: { type: Date, default: null },
+        remarks: { type: String, default: '' },
         date: { type: Date, default: Date.now }
       }
     ]
@@ -275,6 +392,8 @@ const LeadSchema = new mongoose.Schema({
       sector: { type: String, default: '' },
       departureAirport: { type: String, default: '' },
       arrivalAirport: { type: String, default: '' },
+      expectedFlightDate: { type: Date, default: null },
+      confirmedTicketDate: { type: Date, default: null },
       flightDate: { type: Date, default: null },
       flightTime: { type: String, default: '' },
       joiningDate: { type: Date, default: null },

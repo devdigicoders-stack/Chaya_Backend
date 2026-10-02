@@ -2453,6 +2453,482 @@ exports.updatePlacementDeployment = async (req, res) => {
   }
 };
 
+// ─── 1. TWO-PARTY FILE TRANSFER PROTOCOL (FRD Section 1 & 7) ───────────────────
+// @desc    Initiate transfer request to another staff/department
+// @route   POST /api/leads/:id/request-transfer
+// @access  Private
+exports.requestTransfer = async (req, res) => {
+  try {
+    const { toUserId, toRole, toStage, reason, pendingTasks } = req.body;
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+    if (lead.pendingTransfer?.hasPending) {
+      return res.status(400).json({
+        success: false,
+        message: `Lead already has a pending transfer to ${lead.pendingTransfer.toUserName || lead.pendingTransfer.toRole}. Wait for acceptance or return.`
+      });
+    }
+
+    let targetUser = null;
+    if (toUserId) {
+      targetUser = await User.findById(toUserId);
+    }
+
+    lead.pendingTransfer = {
+      hasPending: true,
+      fromUser: req.user._id,
+      fromUserName: req.user.name,
+      toUser: targetUser ? targetUser._id : null,
+      toUserName: targetUser ? targetUser.name : (toRole || 'Department Queue'),
+      toRole: toRole || (targetUser ? targetUser.role : ''),
+      toStage: toStage || lead.currentStage,
+      reason: reason || 'Routine workflow handover',
+      pendingTasks: pendingTasks || '',
+      requestedAt: new Date(),
+      status: 'PENDING',
+      returnReason: ''
+    };
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'TRANSFER_REQUESTED',
+      remarks: `Transfer requested by ${req.user.name} to ${lead.pendingTransfer.toUserName} (${lead.pendingTransfer.toRole}). Reason: ${reason || 'N/A'}`
+    });
+
+    res.json({ success: true, message: `Transfer requested for ${lead.candidateName}`, data: lead });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Accept incoming file transfer (Receiving Confirmation)
+// @route   POST /api/leads/:id/accept-transfer
+// @access  Private
+exports.acceptTransfer = async (req, res) => {
+  try {
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+    if (!lead.pendingTransfer?.hasPending) {
+      return res.status(400).json({ success: false, message: 'No pending transfer on this lead' });
+    }
+
+    const prevHolderName = lead.activeHolder?.name || lead.pendingTransfer.fromUserName || 'Previous Staff';
+    const toStage = lead.pendingTransfer.toStage || lead.currentStage;
+    const toRole = lead.pendingTransfer.toRole || req.user.role;
+
+    // Update active holder to current user
+    lead.activeHolder = {
+      user: req.user._id,
+      name: req.user.name,
+      role: req.user.role,
+      assignedAt: new Date()
+    };
+
+    // Update stage if specified
+    lead.currentStage = toStage;
+
+    // If moving to medical process, auto open bill book ledger
+    if (toStage === 'MEDICAL_PROCESS') {
+      if (!lead.billBook) lead.billBook = {};
+      lead.billBook.isLedgerOpen = true;
+      if (!lead.billBook.openedAt) lead.billBook.openedAt = new Date();
+    }
+
+    // Role-specific assignment sync
+    if (toRole === 'CALLING_STAFF') lead.assignedCallingStaff = req.user._id;
+    if (toRole === 'PRE_VISA_MANAGER') lead.assignedPreVisaManager = req.user._id;
+    if (toRole === 'VISA_MANAGER') lead.assignedVisaManager = req.user._id;
+    if (toRole === 'STAFF_HEAD') lead.assignedStaffHead = req.user._id;
+
+    lead.pendingTransfer.hasPending = false;
+    lead.pendingTransfer.status = 'ACCEPTED';
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'TRANSFER_ACCEPTED',
+      remarks: `File accepted by ${req.user.name} (${req.user.role}) from ${prevHolderName}. Stage: ${lead.currentStage}`
+    });
+
+    res.json({ success: true, message: `File accepted by ${req.user.name}`, data: lead });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Return/Reject incoming file transfer with reason
+// @route   POST /api/leads/:id/return-transfer
+// @access  Private
+exports.returnTransfer = async (req, res) => {
+  try {
+    const { reason } = req.body;
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+    if (!lead.pendingTransfer?.hasPending) {
+      return res.status(400).json({ success: false, message: 'No pending transfer on this lead' });
+    }
+
+    const fromUserName = lead.pendingTransfer.fromUserName;
+
+    lead.pendingTransfer.hasPending = false;
+    lead.pendingTransfer.status = 'RETURNED';
+    lead.pendingTransfer.returnReason = reason || 'Incomplete tasks or incorrect department';
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'TRANSFER_RETURNED',
+      remarks: `Transfer returned to ${fromUserName} by ${req.user.name}. Reason: ${lead.pendingTransfer.returnReason}`
+    });
+
+    res.json({ success: true, message: `Transfer returned to ${fromUserName}`, data: lead });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Get Transfer Inbox (Pending incoming transfers)
+// @route   GET /api/leads/transfers/inbox
+// @access  Private
+exports.getTransferInbox = async (req, res) => {
+  try {
+    const query = {
+      'pendingTransfer.hasPending': true,
+      $or: [
+        { 'pendingTransfer.toUser': req.user._id },
+        { 'pendingTransfer.toRole': req.user.role }
+      ]
+    };
+
+    if (req.user.role === 'ADMIN' || req.user.role === 'STAFF_HEAD') {
+      delete query.$or;
+    }
+
+    const leads = await Lead.find(query).sort({ 'pendingTransfer.requestedAt': -1 });
+    res.json({ success: true, count: leads.length, data: leads });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Get Transfer Outbox (Transfers requested by user)
+// @route   GET /api/leads/transfers/outbox
+// @access  Private
+exports.getTransferOutbox = async (req, res) => {
+  try {
+    const query = {
+      'pendingTransfer.hasPending': true,
+      'pendingTransfer.fromUser': req.user._id
+    };
+
+    if (req.user.role === 'ADMIN') {
+      delete query['pendingTransfer.fromUser'];
+    }
+
+    const leads = await Lead.find(query).sort({ 'pendingTransfer.requestedAt': -1 });
+    res.json({ success: true, count: leads.length, data: leads });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ─── 2. STEP 8: COMPANY CONFIRMATION & PROPOSAL/AGREEMENT ─────────────────────
+// @desc    Update company proposal & agreement confirmation
+// @route   PUT /api/leads/:id/company-confirmation
+// @access  Private
+exports.updateCompanyConfirmation = async (req, res) => {
+  try {
+    const { status, companyName, positionOffered, terms, agreementPdfUrl, recordingUrl } = req.body;
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+    if (!lead.companyConfirmation) lead.companyConfirmation = {};
+
+    lead.companyConfirmation = {
+      status: status || lead.companyConfirmation.status || 'PROPOSAL_SENT',
+      companyName: companyName || lead.companyConfirmation.companyName || lead.country || '',
+      positionOffered: positionOffered || lead.companyConfirmation.positionOffered || lead.trade || '',
+      proposalDate: lead.companyConfirmation.proposalDate || new Date(),
+      acceptanceDate: status === 'AGREEMENT_ACCEPTED' ? new Date() : lead.companyConfirmation.acceptanceDate,
+      terms: terms || lead.companyConfirmation.terms || '',
+      agreementPdfUrl: agreementPdfUrl || lead.companyConfirmation.agreementPdfUrl || '',
+      recordingUrl: recordingUrl || lead.companyConfirmation.recordingUrl || '',
+      updatedAt: new Date()
+    };
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'COMPANY_CONFIRMATION_UPDATED',
+      remarks: `Company proposal/agreement for ${lead.candidateName} updated: ${status || 'PENDING'} (${companyName || 'Company'})`
+    });
+
+    res.json({ success: true, message: 'Company confirmation updated', data: lead });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ─── 3. BILL BOOK & FINANCIAL LEDGER (FRD Section 9) ──────────────────────────
+// @desc    Add transaction to Bill Book (Payment or Refund)
+// @route   POST /api/leads/:id/billbook/transaction
+// @access  Private
+exports.addBillBookTransaction = async (req, res) => {
+  try {
+    const { type, head, amount, paymentMode, referenceNo, remarks, receiptUrl } = req.body;
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+    if (!lead.billBook) lead.billBook = {};
+    if (!lead.billBook.isLedgerOpen) {
+      lead.billBook.isLedgerOpen = true;
+      lead.billBook.openedAt = new Date();
+    }
+    if (!lead.billBook.transactions) lead.billBook.transactions = [];
+
+    const numAmount = Number(amount);
+    if (isNaN(numAmount) || numAmount <= 0) {
+      return res.status(400).json({ success: false, message: 'Amount must be greater than 0' });
+    }
+
+    const isRefund = type === 'REFUND';
+    const prefix = isRefund ? 'REF' : 'REC';
+    const receiptNo = `BB-${prefix}-${Math.floor(100000 + Math.random() * 900000)}`;
+
+    const newTx = {
+      receiptNo,
+      type: type || 'PAYMENT',
+      head: head || (isRefund ? 'REFUND' : 'ADVANCE'),
+      amount: numAmount,
+      paymentMode: paymentMode || 'UPI',
+      referenceNo: referenceNo || '',
+      status: req.user.role === 'ACCOUNTS' || req.user.role === 'ADMIN' ? 'VERIFIED' : 'PENDING_VERIFICATION',
+      receiptUrl: receiptUrl || '',
+      receivedBy: req.user.name,
+      verifiedBy: (req.user.role === 'ACCOUNTS' || req.user.role === 'ADMIN') ? req.user.name : '',
+      verifiedAt: (req.user.role === 'ACCOUNTS' || req.user.role === 'ADMIN') ? new Date() : null,
+      remarks: remarks || '',
+      date: new Date()
+    };
+
+    lead.billBook.transactions.push(newTx);
+
+    // Update totals
+    if (!isRefund) {
+      lead.billBook.totalReceived = (lead.billBook.totalReceived || 0) + numAmount;
+      lead.billBook.balanceDue = Math.max(0, (lead.billBook.approvedPayable || 0) - lead.billBook.totalReceived);
+      lead.paymentDetails.totalPaid = (lead.paymentDetails.totalPaid || 0) + numAmount;
+      lead.paymentDetails.balanceDue = Math.max(0, (lead.paymentDetails.totalFee || 0) - lead.paymentDetails.totalPaid);
+      if (head === 'ADVANCE') {
+        lead.paymentDetails.advancePaid = (lead.paymentDetails.advancePaid || 0) + numAmount;
+      }
+    } else {
+      lead.billBook.refundPaid = (lead.billBook.refundPaid || 0) + numAmount;
+      lead.billBook.refundBalance = Math.max(0, (lead.billBook.approvedRefund || 0) - lead.billBook.refundPaid);
+      if (lead.billBook.refundBalance === 0 && (lead.billBook.approvedRefund || 0) > 0) {
+        lead.closureStatus = 'FINAL_CLOSED';
+      } else {
+        lead.closureStatus = 'REFUND_PENDING';
+      }
+    }
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: isRefund ? 'REFUND_RECORDED' : 'PAYMENT_RECORDED',
+      remarks: `${type || 'PAYMENT'} of ₹${numAmount} logged in Bill Book (${newTx.head}, Receipt: ${receiptNo}). Balance Due: ₹${lead.billBook.balanceDue}`
+    });
+
+    res.json({ success: true, message: `${type || 'Payment'} of ₹${numAmount} saved`, data: lead.billBook });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Verify Bill Book transaction by Accounts (FRD Section 9)
+// @route   PUT /api/leads/:id/billbook/transaction/:receiptNo/verify
+// @access  Private (ACCOUNTS, ADMIN)
+exports.verifyBillBookTransaction = async (req, res) => {
+  try {
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+    const tx = lead.billBook?.transactions?.find(t => t.receiptNo === req.params.receiptNo);
+    if (!tx) return res.status(404).json({ success: false, message: 'Transaction not found' });
+
+    tx.status = 'VERIFIED';
+    tx.verifiedBy = req.user.name;
+    tx.verifiedAt = new Date();
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'PAYMENT_VERIFIED',
+      remarks: `Receipt #${tx.receiptNo} of ₹${tx.amount} verified by Accounts (${req.user.name})`
+    });
+
+    res.json({ success: true, message: `Receipt ${tx.receiptNo} verified`, data: lead.billBook });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Add / Revise Bill Book charge head
+// @route   POST /api/leads/:id/billbook/charge
+// @access  Private
+exports.addBillBookCharge = async (req, res) => {
+  try {
+    const { head, amount, description } = req.body;
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+    if (!lead.billBook) lead.billBook = {};
+    if (!lead.billBook.charges) lead.billBook.charges = [];
+
+    const numAmount = Number(amount);
+    lead.billBook.charges.push({
+      head: head || 'SERVICE',
+      amount: numAmount,
+      description: description || '',
+      addedAt: new Date()
+    });
+
+    // Recalculate approved payable
+    lead.billBook.approvedPayable = lead.billBook.charges.reduce((acc, c) => acc + (c.amount || 0), 0);
+    lead.billBook.balanceDue = Math.max(0, lead.billBook.approvedPayable - (lead.billBook.totalReceived || 0));
+
+    await lead.save();
+
+    res.json({ success: true, message: `Charge of ₹${numAmount} added to Bill Book`, data: lead.billBook });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ─── 4. CONFIRMATIONS & RECORDINGS (FRD Section 8) ────────────────────────────
+// @desc    Save or update any of the 8 Confirmation PDFs and Audio/Video Recordings
+// @route   POST /api/leads/:id/confirmations
+// @access  Private
+exports.saveConfirmation = async (req, res) => {
+  try {
+    const { docType, title, status, sharedChannel, pdfUrl, recordingUrl, recordingType, remarks } = req.body;
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+    if (!lead.confirmations) lead.confirmations = [];
+
+    let conf = lead.confirmations.find(c => c.docType === docType);
+    if (!conf) {
+      conf = {
+        docType,
+        title: title || docType.replace(/_/g, ' '),
+        status: status || 'GENERATED',
+        version: 1,
+        generatedAt: new Date(),
+        sharedAt: status === 'SHARED' ? new Date() : null,
+        sharedChannel: sharedChannel || 'WHATSAPP',
+        confirmedAt: status === 'CLIENT_CONFIRMED' ? new Date() : null,
+        pdfUrl: pdfUrl || '',
+        recordingUrl: recordingUrl || '',
+        recordingType: recordingType || 'AUDIO',
+        remarks: remarks || '',
+        handledBy: req.user._id,
+        handledByName: req.user.name
+      };
+      lead.confirmations.push(conf);
+    } else {
+      conf.status = status || conf.status;
+      if (status === 'SHARED' && !conf.sharedAt) conf.sharedAt = new Date();
+      if (status === 'CLIENT_CONFIRMED' && !conf.confirmedAt) conf.confirmedAt = new Date();
+      if (pdfUrl) conf.pdfUrl = pdfUrl;
+      if (recordingUrl) conf.recordingUrl = recordingUrl;
+      if (recordingType) conf.recordingType = recordingType;
+      if (remarks) conf.remarks = remarks;
+      conf.handledBy = req.user._id;
+      conf.handledByName = req.user.name;
+    }
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'CONFIRMATION_UPDATED',
+      remarks: `${docType.replace(/_/g, ' ')} set to ${status || 'UPDATED'}${recordingUrl ? ' (Recording Attached)' : ''}`
+    });
+
+    res.json({ success: true, message: `Confirmation ${docType} updated`, data: lead.confirmations });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ─── 5. FILE CLOSURE & REFUND SETTLEMENT (FRD Section 5) ──────────────────────
+// @desc    Close file (Closed / No Advance or Cancellation with Refund settlement)
+// @route   PUT /api/leads/:id/close-file
+// @access  Private (ADMIN, STAFF_HEAD, CALLING_STAFF)
+exports.closeLeadFile = async (req, res) => {
+  try {
+    const { closureType, reason, refundPayable } = req.body;
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+    const validTypes = ['CLOSED_NO_ADVANCE', 'REFUND_PENDING', 'FINANCIAL_PENDING', 'FINAL_CLOSED'];
+    const chosenType = validTypes.includes(closureType) ? closureType : 'CLOSED_NO_ADVANCE';
+
+    lead.closureStatus = chosenType;
+    if (chosenType === 'FINAL_CLOSED' || chosenType === 'CLOSED_NO_ADVANCE') {
+      lead.currentStage = 'CANCELLED';
+    }
+
+    const numRefund = Number(refundPayable) || 0;
+    lead.closureDetails = {
+      closedAt: new Date(),
+      reason: reason || 'Candidate withdrew or failed advance confirmation',
+      closedBy: req.user._id,
+      refundPayable: numRefund,
+      refundPaid: lead.billBook?.refundPaid || 0,
+      refundBalance: Math.max(0, numRefund - (lead.billBook?.refundPaid || 0)),
+      settlementDate: chosenType === 'FINAL_CLOSED' ? new Date() : null
+    };
+
+    if (numRefund > 0) {
+      if (!lead.billBook) lead.billBook = {};
+      lead.billBook.approvedRefund = numRefund;
+      lead.billBook.refundBalance = Math.max(0, numRefund - (lead.billBook.refundPaid || 0));
+    }
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'FILE_CLOSED',
+      remarks: `Lead file closed as ${chosenType}. Reason: ${reason || 'N/A'}${numRefund > 0 ? ` (Refund: ₹${numRefund})` : ''}`
+    });
+
+    res.json({ success: true, message: `File closed as ${chosenType}`, data: lead });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 
 
 

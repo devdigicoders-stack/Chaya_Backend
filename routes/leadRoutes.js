@@ -36,7 +36,18 @@ const {
   updatePlacementDeployment,
   getLeads,
   getAdminDashboardSummary,
-  adminLeadOverride
+  adminLeadOverride,
+  requestTransfer,
+  acceptTransfer,
+  returnTransfer,
+  getTransferInbox,
+  getTransferOutbox,
+  updateCompanyConfirmation,
+  addBillBookTransaction,
+  verifyBillBookTransaction,
+  addBillBookCharge,
+  saveConfirmation,
+  closeLeadFile
 } = require('../controllers/leadController');
 const { protect, authorize } = require('../middleware/authMiddleware');
 const validateTransferChecklist = require('../middleware/checkTransferChecklist');
@@ -45,6 +56,8 @@ const documentUpload = require('../middleware/documentUploadMiddleware');
 // 1. Core Lead Retrieval & Stats
 router.get('/', protect, getLeads);
 router.get('/admin/dashboard-summary', protect, authorize('ADMIN', 'DATA_CONTROLLER', 'STAFF_HEAD'), getAdminDashboardSummary);
+router.get('/transfers/inbox', protect, getTransferInbox);
+router.get('/transfers/outbox', protect, getTransferOutbox);
 router.get('/:id', protect, getLeadById);
 
 // 2. Ingestion & Bulk Import
@@ -88,7 +101,26 @@ router.put('/:id/placement-viva-result', protect, submitPlacementVivaResult);
 router.put('/:id/placement-offer-letter', protect, issuePlacementOfferLetter);
 router.put('/:id/placement-deployment', protect, updatePlacementDeployment);
 
-// 4. Lead Editing, Hold & Deletion
+// 8. Two-Party Transfer Protocol & File Responsibility (FRD Section 1 & 7)
+router.post('/:id/request-transfer', protect, requestTransfer);
+router.post('/:id/accept-transfer', protect, acceptTransfer);
+router.post('/:id/return-transfer', protect, returnTransfer);
+
+// 9. Step 8 Company Confirmation & Proposal/Agreement (FRD Section 4, Step 8)
+router.put('/:id/company-confirmation', protect, updateCompanyConfirmation);
+
+// 10. Bill Book & Financial Ledger (FRD Section 9)
+router.post('/:id/billbook/transaction', protect, addBillBookTransaction);
+router.put('/:id/billbook/transaction/:receiptNo/verify', protect, authorize('ACCOUNTS', 'ADMIN'), verifyBillBookTransaction);
+router.post('/:id/billbook/charge', protect, addBillBookCharge);
+
+// 11. 8 Mandatory Confirmations & Audio/Video Recordings (FRD Section 8)
+router.post('/:id/confirmations', protect, saveConfirmation);
+
+// 12. File Closure & Refund Settlement (FRD Section 5)
+router.put('/:id/close-file', protect, closeLeadFile);
+
+// 13. Lead Editing, Hold & Deletion
 router.put('/:id/hold', protect, toggleLeadHold);
 router.put('/:id/admin-override', protect, authorize('ADMIN'), adminLeadOverride);
 router.put('/:id', protect, updateLead);
