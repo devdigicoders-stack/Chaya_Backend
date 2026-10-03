@@ -3,6 +3,13 @@ const Lead = require('../models/Lead');
 const User = require('../models/User');
 const LeadHistory = require('../models/LeadHistory');
 const logLeadHistory = require('../utils/historyLogger');
+const {
+  findNextAvailableRefundDate,
+  getDayDetails,
+  formatDateKey,
+  DAILY_REFUND_CAP,
+  HOLIDAYS
+} = require('../utils/holidayCalendar');
 
 // Generate unique lead ID (e.g. LEAD-1001)
 const generateLeadId = async () => {
@@ -432,6 +439,9 @@ exports.cancelOrHoldLead = async (req, res) => {
       lead.closureStatus = 'REFUND_PENDING';
 
       const numRefund = totalReceived;
+      const scheduleInfo = await findNextAvailableRefundDate(numRefund, Lead);
+
+      lead.scheduledRefundDate = scheduleInfo.scheduledDate;
       lead.closureDetails = {
         closedAt: new Date(),
         reason: reason || 'Candidate cancelled by staff after payment was collected',
@@ -439,6 +449,8 @@ exports.cancelOrHoldLead = async (req, res) => {
         refundPayable: numRefund,
         refundPaid: lead.billBook?.refundPaid || 0,
         refundBalance: Math.max(0, numRefund - (lead.billBook?.refundPaid || 0)),
+        scheduledRefundDate: scheduleInfo.scheduledDate,
+        isRefundMarked: false,
         settlementDate: null
       };
 
@@ -455,14 +467,19 @@ exports.cancelOrHoldLead = async (req, res) => {
         lead,
         performedBy: req.user,
         actionType: 'CANDIDATE_CANCELLED',
-        remarks: `Candidate marked as CANCELLED by ${req.user.name || 'Staff'} (${req.user.role}). Total Payment Received: ₹${totalReceived}. Initiated Refund Settlement (REFUND_PENDING). Reason: ${reason || 'N/A'}`
+        remarks: `Candidate marked as CANCELLED by ${req.user.name || 'Staff'} (${req.user.role}). Total Payment Received: ₹${totalReceived}. Initiated Refund Settlement (REFUND_PENDING). Auto-scheduled on working calendar for ${scheduleInfo.dateKey} (Daily quota slot: ₹${scheduleInfo.totalDayScheduled}/₹${scheduleInfo.dailyCap}). Reason: ${reason || 'N/A'}`
       });
 
       return res.json({
         success: true,
         actionTaken: 'CANCELLED',
         totalReceived,
-        message: `Candidate has been CANCELLED. Total payment of ₹${totalReceived.toLocaleString('en-IN')} (Service/Medical fee) has been queued for Refund Settlement.`,
+        totalPaid: totalReceived,
+        scheduledRefundDate: scheduleInfo.scheduledDate,
+        scheduledDateFormatted: scheduleInfo.dateKey,
+        dailyCap: scheduleInfo.dailyCap,
+        dayTotalScheduled: scheduleInfo.totalDayScheduled,
+        message: `Candidate has been CANCELLED. Total payment of ₹${totalReceived.toLocaleString('en-IN')} queued for Refund Settlement. Auto-scheduled on working calendar for ${scheduleInfo.dateKey} (excluding weekends & holidays, under ₹25k cap).`,
         data: lead
       });
     } else {
@@ -746,6 +763,8 @@ exports.updateLocationConfirmation = async (req, res) => {
         lead.currentStage = 'CANCELLED';
         lead.isHold = false;
         lead.closureStatus = 'REFUND_PENDING';
+        const scheduleInfo = await findNextAvailableRefundDate(totalReceived, Lead);
+        lead.scheduledRefundDate = scheduleInfo.scheduledDate;
         lead.closureDetails = {
           closedAt: new Date(),
           reason: cancellationReason || 'Candidate cancelled during location confirmation',
@@ -753,6 +772,8 @@ exports.updateLocationConfirmation = async (req, res) => {
           refundPayable: totalReceived,
           refundPaid: lead.billBook?.refundPaid || 0,
           refundBalance: Math.max(0, totalReceived - (lead.billBook?.refundPaid || 0)),
+          scheduledRefundDate: scheduleInfo.scheduledDate,
+          isRefundMarked: false,
           settlementDate: null
         };
         if (!lead.billBook) {
@@ -769,14 +790,19 @@ exports.updateLocationConfirmation = async (req, res) => {
           actionType: 'CANDIDATE_CANCELLED',
           fromStage: prevStage,
           toStage: 'CANCELLED',
-          remarks: `Candidate cancelled location confirmation. Total Payment Received: ₹${totalReceived}. Queued for Refund Settlement. Reason: ${cancellationReason || 'Candidate withdrawn'}`
+          remarks: `Candidate cancelled location confirmation. Total Payment Received: ₹${totalReceived}. Queued for Refund Settlement. Auto-scheduled for ${scheduleInfo.dateKey} (Daily quota slot: ₹${scheduleInfo.totalDayScheduled}/₹${scheduleInfo.dailyCap}). Reason: ${cancellationReason || 'Candidate withdrawn'}`
         });
 
         return res.json({
           success: true,
           actionTaken: 'CANCELLED',
           totalReceived,
-          message: `Candidate marked as CANCELLED. Payment of ₹${totalReceived.toLocaleString('en-IN')} queued for Refund Settlement.`,
+          totalPaid: totalReceived,
+          scheduledRefundDate: scheduleInfo.scheduledDate,
+          scheduledDateFormatted: scheduleInfo.dateKey,
+          dailyCap: scheduleInfo.dailyCap,
+          dayTotalScheduled: scheduleInfo.totalDayScheduled,
+          message: `Candidate marked as CANCELLED. Payment of ₹${totalReceived.toLocaleString('en-IN')} queued for Refund Settlement. Auto-scheduled for ${scheduleInfo.dateKey}.`,
           data: lead
         });
       } else {
@@ -3560,6 +3586,206 @@ exports.getCandidateApplications = async (req, res) => {
         archivedApplications: Array.isArray(lead.applications) ? lead.applications : [],
         crossLinkedLeads
       }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Get Dynamic Refund Calendar & Diary Data for a given Month and Year
+// @route   GET /api/leads/refund-calendar
+// @access  Private (Accounts / Admin / Staff)
+exports.getRefundCalendar = async (req, res) => {
+  try {
+    const year = parseInt(req.query.year) || new Date().getFullYear();
+    const month = parseInt(req.query.month) || (new Date().getMonth() + 1); // 1 - 12
+
+    // Get number of days in this month
+    const totalDays = new Date(year, month, 0).getDate();
+
+    // Fetch all leads scheduled in this month or with refund pending
+    const startOfMonth = new Date(year, month - 1, 1, 0, 0, 0, 0);
+    const endOfMonth = new Date(year, month - 1, totalDays, 23, 59, 59, 999);
+
+    const leadsInMonth = await Lead.find({
+      $or: [
+        { scheduledRefundDate: { $gte: startOfMonth, $lte: endOfMonth } },
+        { 'closureDetails.scheduledRefundDate': { $gte: startOfMonth, $lte: endOfMonth } },
+        { closureStatus: { $in: ['REFUND_PENDING', 'FINANCIAL_PENDING', 'FINAL_CLOSED'] } }
+      ]
+    }).select('candidateName leadId candidateCode phone passportNumber billBook closureDetails closureStatus scheduledRefundDate currentStage').lean();
+
+    const days = [];
+
+    for (let dayNum = 1; dayNum <= totalDays; dayNum++) {
+      const currentDate = new Date(year, month - 1, dayNum);
+      const details = getDayDetails(currentDate);
+
+      // Filter leads belonging to this specific day
+      const dayLeads = leadsInMonth.filter(l => {
+        const sched = l.scheduledRefundDate || l.closureDetails?.scheduledRefundDate;
+        if (!sched) return false;
+        return formatDateKey(sched) === details.dateKey;
+      });
+
+      let totalScheduled = 0;
+      let totalDisbursed = 0;
+
+      const candidates = dayLeads.map(l => {
+        const approved = l.billBook?.approvedRefund || l.closureDetails?.refundPayable || 0;
+        const paid = l.billBook?.refundPaid || l.closureDetails?.refundPaid || 0;
+        const balance = Math.max(0, approved - paid);
+        const isSettled = l.closureStatus === 'FINAL_CLOSED' || (approved > 0 && balance === 0) || l.closureDetails?.isRefundMarked;
+
+        totalScheduled += approved;
+        totalDisbursed += paid;
+
+        return {
+          _id: l._id,
+          candidateName: l.candidateName,
+          leadId: l.leadId,
+          candidateCode: l.candidateCode,
+          phone: l.phone,
+          passportNumber: l.passportNumber,
+          refundPayable: approved,
+          refundPaid: paid,
+          refundBalance: balance,
+          closureStatus: l.closureStatus,
+          isRefundMarked: !!isSettled,
+          bankDetails: l.closureDetails?.bankDetails || {}
+        };
+      });
+
+      days.push({
+        day: dayNum,
+        dateKey: details.dateKey,
+        dayOfWeek: details.dayOfWeek,
+        isWeekend: details.isWeekend,
+        weekendName: details.weekendName,
+        isHoliday: details.isHoliday,
+        holidayName: details.holidayName,
+        isWorkingDay: details.isWorkingDay,
+        dailyCap: DAILY_REFUND_CAP,
+        totalScheduled,
+        totalDisbursed,
+        remainingCapacity: Math.max(0, DAILY_REFUND_CAP - totalScheduled),
+        isFull: totalScheduled >= DAILY_REFUND_CAP,
+        candidatesCount: candidates.length,
+        candidates
+      });
+    }
+
+    res.json({
+      success: true,
+      year,
+      month,
+      dailyCap: DAILY_REFUND_CAP,
+      days
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Reschedule a candidate's refund date (Diary management)
+// @route   PUT /api/leads/:id/reschedule-refund
+// @access  Private (Admin / Accounts)
+exports.rescheduleRefund = async (req, res) => {
+  try {
+    const { newDate, reason } = req.body;
+    if (!newDate) {
+      return res.status(400).json({ success: false, message: 'New scheduled date required' });
+    }
+
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+    const targetDate = new Date(newDate);
+    const dayDetails = getDayDetails(targetDate);
+
+    const oldDateKey = lead.scheduledRefundDate ? formatDateKey(lead.scheduledRefundDate) : 'Not Scheduled';
+    const newDateKey = dayDetails.dateKey;
+
+    lead.scheduledRefundDate = targetDate;
+    if (!lead.closureDetails) lead.closureDetails = {};
+    lead.closureDetails.scheduledRefundDate = targetDate;
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'REFUND_RESCHEDULED',
+      remarks: `Refund date rescheduled from ${oldDateKey} to ${newDateKey} by ${req.user.name || 'Admin'}. Reason: ${reason || 'Admin Calendar adjustment'}. ${dayDetails.isHoliday ? `(Note: Day is holiday: ${dayDetails.holidayName})` : ''}`
+    });
+
+    res.json({
+      success: true,
+      message: `Refund rescheduled to ${newDateKey} successfully`,
+      data: lead
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Quick Mark as Refunded (From Diary Calendar)
+// @route   PUT /api/leads/:id/mark-refunded
+// @access  Private (Admin / Accounts)
+exports.markRefunded = async (req, res) => {
+  try {
+    const { referenceNo, paymentMode = 'BANK_TRANSFER', remarks } = req.body;
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Candidate lead not found' });
+
+    const approved = lead.billBook?.approvedRefund || lead.closureDetails?.refundPayable || 0;
+    const paidAlready = lead.billBook?.refundPaid || lead.closureDetails?.refundPaid || 0;
+    const remainingToPay = Math.max(0, approved - paidAlready);
+
+    if (!lead.billBook) lead.billBook = { transactions: [], approvedRefund: approved, refundPaid: 0, refundBalance: 0 };
+    if (!lead.billBook.transactions) lead.billBook.transactions = [];
+
+    const receiptNo = `REF-${Math.floor(100000 + Math.random() * 900000)}`;
+
+    const newTx = {
+      receiptNo,
+      type: 'REFUND',
+      head: 'REFUND',
+      amount: remainingToPay > 0 ? remainingToPay : approved,
+      paymentMode: paymentMode || 'BANK_TRANSFER',
+      referenceNo: referenceNo || 'DIARY-SETTLED',
+      status: 'VERIFIED',
+      receivedBy: req.user.name,
+      verifiedBy: req.user.name,
+      verifiedAt: new Date(),
+      remarks: remarks || 'Refund marked settled via Calendar Diary',
+      date: new Date()
+    };
+
+    lead.billBook.transactions.push(newTx);
+    lead.billBook.refundPaid = approved;
+    lead.billBook.refundBalance = 0;
+
+    if (!lead.closureDetails) lead.closureDetails = {};
+    lead.closureDetails.refundPaid = approved;
+    lead.closureDetails.refundBalance = 0;
+    lead.closureDetails.isRefundMarked = true;
+    lead.closureDetails.settlementDate = new Date();
+    lead.closureStatus = 'FINAL_CLOSED';
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'REFUND_DISBURSED',
+      remarks: `Refund of ₹${approved} marked as settled and closed via Calendar Diary by ${req.user.name} (${req.user.role}). Mode: ${paymentMode}, Ref: ${referenceNo || 'DIARY-SETTLED'}. File marked FINAL_CLOSED.`
+    });
+
+    res.json({
+      success: true,
+      message: `Candidate ${lead.candidateName} marked as REFUNDED and file FINAL_CLOSED.`,
+      data: lead
     });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });

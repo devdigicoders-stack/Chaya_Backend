@@ -51,7 +51,10 @@ const {
   processRefundPayout,
   reapplyCandidate,
   getCandidateApplications,
-  cancelOrHoldLead
+  cancelOrHoldLead,
+  getRefundCalendar,
+  rescheduleRefund,
+  markRefunded
 } = require('../controllers/leadController');
 const { protect, authorize } = require('../middleware/authMiddleware');
 const validateTransferChecklist = require('../middleware/checkTransferChecklist');
@@ -62,6 +65,7 @@ router.get('/', protect, getLeads);
 router.get('/admin/dashboard-summary', protect, authorize('ADMIN', 'DATA_CONTROLLER', 'STAFF_HEAD'), getAdminDashboardSummary);
 router.get('/transfers/inbox', protect, getTransferInbox);
 router.get('/transfers/outbox', protect, getTransferOutbox);
+router.get('/refund-calendar', protect, getRefundCalendar);
 router.get('/:id', protect, getLeadById);
 
 // 2. Ingestion & Bulk Import
@@ -124,6 +128,8 @@ router.post('/:id/confirmations', protect, saveConfirmation);
 // 12. File Closure & Refund Settlement (FRD Section 5 & 9)
 router.put('/:id/close-file', protect, closeLeadFile);
 router.post('/:id/process-refund', protect, authorize('ACCOUNTS', 'ADMIN', 'STAFF_HEAD'), processRefundPayout);
+router.put('/:id/reschedule-refund', protect, authorize('ACCOUNTS', 'ADMIN'), rescheduleRefund);
+router.put('/:id/mark-refunded', protect, authorize('ACCOUNTS', 'ADMIN'), markRefunded);
 
 // 13. Re-Apply & Multi-Application Tracking (FRD Section 6 & 11)
 router.post('/:id/re-apply', protect, reapplyCandidate);

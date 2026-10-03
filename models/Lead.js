@@ -421,6 +421,32 @@ const LeadSchema = new mongoose.Schema({
   isHold: { type: Boolean, default: false },
   holdReason: { type: String, default: '' },
 
+  // Formal File Closure & Dynamic Refund Settlement System
+  closureStatus: {
+    type: String,
+    enum: ['ACTIVE', 'CLOSED_NO_ADVANCE', 'REFUND_PENDING', 'FINANCIAL_PENDING', 'FINAL_CLOSED'],
+    default: 'ACTIVE'
+  },
+  scheduledRefundDate: { type: Date, default: null },
+  closureDetails: {
+    closedAt: { type: Date },
+    reason: { type: String, default: '' },
+    closedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    refundPayable: { type: Number, default: 0 },
+    refundPaid: { type: Number, default: 0 },
+    refundBalance: { type: Number, default: 0 },
+    scheduledRefundDate: { type: Date, default: null },
+    isRefundMarked: { type: Boolean, default: false },
+    settlementDate: { type: Date, default: null },
+    bankDetails: {
+      accountHolderName: { type: String, default: '' },
+      bankName: { type: String, default: '' },
+      accountNumber: { type: String, default: '' },
+      ifscCode: { type: String, default: '' },
+      upiId: { type: String, default: '' }
+    }
+  },
+
   // FRD Section 6 & 11: Multi-Application & Re-Apply Tracking System
   // One candidate can have multiple applications across time without overwriting prior history
   currentApplicationId: { type: String, default: 'APP-01' },
