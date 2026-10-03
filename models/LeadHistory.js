@@ -43,7 +43,13 @@ const LeadHistorySchema = new mongoose.Schema({
       'OFFER_LETTER_ISSUED',
       'OFFER_LETTER_STATUS_UPDATED',
       'FLIGHT_JOINING_UPDATED',
-      'FINAL_PAYMENT_RECORDED'
+      'FINAL_PAYMENT_RECORDED',
+      'FILE_CLOSED',
+      'REFUND_DISBURSED',
+      'CONFIRMATION_UPDATED',
+      'REAPPLIED_NEW_CYCLE',
+      'CANDIDATE_CANCELLED',
+      'CANDIDATE_PLACED_ON_HOLD'
     ],
     required: true
   },

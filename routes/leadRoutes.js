@@ -50,7 +50,8 @@ const {
   closeLeadFile,
   processRefundPayout,
   reapplyCandidate,
-  getCandidateApplications
+  getCandidateApplications,
+  cancelOrHoldLead
 } = require('../controllers/leadController');
 const { protect, authorize } = require('../middleware/authMiddleware');
 const validateTransferChecklist = require('../middleware/checkTransferChecklist');
@@ -130,6 +131,7 @@ router.get('/:id/applications', protect, getCandidateApplications);
 
 // 14. Lead Editing, Hold & Deletion
 router.put('/:id/hold', protect, toggleLeadHold);
+router.post('/:id/cancel-or-hold', protect, cancelOrHoldLead);
 router.put('/:id/admin-override', protect, authorize('ADMIN'), adminLeadOverride);
 router.put('/:id', protect, updateLead);
 router.delete('/:id', protect, authorize('ADMIN'), deleteLead);

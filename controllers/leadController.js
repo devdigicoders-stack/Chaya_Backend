@@ -340,6 +340,7 @@ exports.deleteLead = async (req, res) => {
 // @access  Private
 exports.toggleLeadHold = async (req, res) => {
   try {
+    const { isHold, reason } = req.body;
     let lead = null;
     if (mongoose.Types.ObjectId.isValid(req.params.id)) {
       lead = await Lead.findById(req.params.id);
@@ -361,6 +362,131 @@ exports.toggleLeadHold = async (req, res) => {
     });
 
     res.json({ success: true, message: `Lead hold status updated`, data: lead });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// Helper: Calculate total verified/received payments (Service Fee, Medical Fee, Advance, Stage Payments)
+const getLeadTotalPaymentReceived = (lead) => {
+  let total = 0;
+  if (lead.billBook) {
+    if (typeof lead.billBook.totalReceived === 'number') {
+      total = Math.max(total, lead.billBook.totalReceived);
+    }
+    if (Array.isArray(lead.billBook.transactions) && lead.billBook.transactions.length > 0) {
+      const txSum = lead.billBook.transactions
+        .filter(t => t.type !== 'REFUND' && t.status !== 'REJECTED')
+        .reduce((acc, t) => acc + (Number(t.amount) || 0), 0);
+      total = Math.max(total, txSum);
+    }
+  }
+  if (lead.paymentBooking?.advanceAmount) {
+    total = Math.max(total, Number(lead.paymentBooking.advanceAmount) || 0);
+  }
+  if (lead.paymentBooking?.servicePaid || lead.paymentBooking?.medicalPaid) {
+    const bookingSum = (Number(lead.paymentBooking.servicePaid) || 0) + (Number(lead.paymentBooking.medicalPaid) || 0);
+    total = Math.max(total, bookingSum);
+  }
+  if (lead.paymentDetails?.servicePaid || lead.paymentDetails?.medicalPaid) {
+    const directServiceMedical = (Number(lead.paymentDetails.servicePaid) || 0) + (Number(lead.paymentDetails.medicalPaid) || 0);
+    total = Math.max(total, directServiceMedical);
+  }
+  if (lead.paymentDetails?.totalPaid) {
+    total = Math.max(total, Number(lead.paymentDetails.totalPaid) || 0);
+  } else if (lead.paymentDetails?.advancePaid) {
+    total = Math.max(total, Number(lead.paymentDetails.advancePaid) || 0);
+  }
+  if (Array.isArray(lead.paymentDetails?.history) && lead.paymentDetails.history.length > 0) {
+    const histSum = lead.paymentDetails.history.reduce((acc, h) => acc + (Number(h.amount) || 0), 0);
+    total = Math.max(total, histSum);
+  }
+  return total;
+};
+
+// @desc    Dynamic Cancel or Hold Lead (Payment Received -> CANCELLED & Refund Settlement; No Payment -> ON_HOLD)
+// @route   POST /api/leads/:id/cancel-or-hold
+// @access  Private (Any staff / Admin)
+exports.cancelOrHoldLead = async (req, res) => {
+  try {
+    const { reason } = req.body;
+    let lead = null;
+    if (mongoose.Types.ObjectId.isValid(req.params.id)) {
+      lead = await Lead.findById(req.params.id);
+    }
+    if (!lead) {
+      lead = await Lead.findOne({ leadId: req.params.id });
+    }
+    if (!lead) {
+      lead = await Lead.findOne({ candidateCode: req.params.id });
+    }
+    if (!lead) return res.status(404).json({ success: false, message: 'Candidate lead not found' });
+
+    const totalReceived = getLeadTotalPaymentReceived(lead);
+
+    if (totalReceived > 0) {
+      // RULE 1: Payment received (Service Fee / Medical Fee / Advance) -> Mark as CANCELLED
+      lead.currentStage = 'CANCELLED';
+      lead.isHold = false;
+      lead.closureStatus = 'REFUND_PENDING';
+
+      const numRefund = totalReceived;
+      lead.closureDetails = {
+        closedAt: new Date(),
+        reason: reason || 'Candidate cancelled by staff after payment was collected',
+        closedBy: req.user._id,
+        refundPayable: numRefund,
+        refundPaid: lead.billBook?.refundPaid || 0,
+        refundBalance: Math.max(0, numRefund - (lead.billBook?.refundPaid || 0)),
+        settlementDate: null
+      };
+
+      if (!lead.billBook) {
+        lead.billBook = { approvedRefund: numRefund, refundPaid: 0, refundBalance: numRefund, transactions: [] };
+      } else {
+        lead.billBook.approvedRefund = numRefund;
+        lead.billBook.refundBalance = Math.max(0, numRefund - (lead.billBook?.refundPaid || 0));
+      }
+
+      await lead.save();
+
+      await logLeadHistory({
+        lead,
+        performedBy: req.user,
+        actionType: 'CANDIDATE_CANCELLED',
+        remarks: `Candidate marked as CANCELLED by ${req.user.name || 'Staff'} (${req.user.role}). Total Payment Received: ₹${totalReceived}. Initiated Refund Settlement (REFUND_PENDING). Reason: ${reason || 'N/A'}`
+      });
+
+      return res.json({
+        success: true,
+        actionTaken: 'CANCELLED',
+        totalReceived,
+        message: `Candidate has been CANCELLED. Total payment of ₹${totalReceived.toLocaleString('en-IN')} (Service/Medical fee) has been queued for Refund Settlement.`,
+        data: lead
+      });
+    } else {
+      // RULE 2: No payment received (₹0) -> Put on HOLD (Cannot be CANCELLED)
+      lead.isHold = true;
+      lead.holdReason = reason || 'Staff requested cancellation, but no service/medical fee payment received. Placed on HOLD as per company policy.';
+      lead.closureStatus = 'CLOSED_NO_ADVANCE';
+
+      await lead.save();
+
+      await logLeadHistory({
+        lead,
+        performedBy: req.user,
+        actionType: 'CANDIDATE_PLACED_ON_HOLD',
+        remarks: `Cancellation requested by ${req.user.name || 'Staff'}, but ₹0 payment was received. Per company policy, candidate placed on HOLD instead of Cancelled. Reason: ${reason || 'N/A'}`
+      });
+
+      return res.json({
+        success: true,
+        actionTaken: 'ON_HOLD',
+        totalReceived: 0,
+        message: `Candidate has ₹0 payment (Service Fee / Medical Fee not received). As per company policy, candidate cannot be cancelled and has been placed on HOLD.`,
+        data: lead
+      });
+    }
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
@@ -522,6 +648,54 @@ exports.transferLeadStage = async (req, res) => {
     if (toStage === 'VIVA') normalizedToStage = 'VIVA_PLACEMENT';
 
     const prevStage = lead.currentStage;
+
+    // Strict Business Rule: Candidate can only be CANCELLED if payment (service fee / medical fee) was received.
+    // Otherwise, candidate must be placed on HOLD.
+    if (normalizedToStage === 'CANCELLED') {
+      const totalReceived = getLeadTotalPaymentReceived(lead);
+      if (totalReceived <= 0) {
+        lead.isHold = true;
+        lead.holdReason = remarks || 'Cancellation rejected: No payment received for service/medical fee. Moved to HOLD.';
+        lead.holdAt = new Date();
+        lead.closureStatus = 'CLOSED_NO_ADVANCE';
+        await lead.save();
+
+        await logLeadHistory({
+          lead,
+          performedBy: req.user,
+          actionType: 'HOLD_TOGGLED',
+          fromStage: prevStage,
+          toStage: prevStage,
+          remarks: `Payment not received (Service fee / Medical fee). Candidate placed on HOLD instead of CANCELLED per rule.`
+        });
+
+        return res.json({
+          success: true,
+          actionTaken: 'HOLD',
+          message: 'Candidate has NOT made any payments (Service fee / Medical fee). Candidate placed on HOLD instead of CANCELLED.',
+          data: lead
+        });
+      } else {
+        lead.isHold = false;
+        lead.closureStatus = 'REFUND_PENDING';
+        lead.closureDetails = {
+          closedAt: new Date(),
+          reason: remarks || 'Candidate cancelled by staff after payment was collected',
+          closedBy: req.user._id,
+          refundPayable: totalReceived,
+          refundPaid: lead.billBook?.refundPaid || 0,
+          refundBalance: Math.max(0, totalReceived - (lead.billBook?.refundPaid || 0)),
+          settlementDate: null
+        };
+        if (!lead.billBook) {
+          lead.billBook = { approvedRefund: totalReceived, refundPaid: 0, refundBalance: totalReceived, transactions: [] };
+        } else {
+          lead.billBook.approvedRefund = totalReceived;
+          lead.billBook.refundBalance = Math.max(0, totalReceived - (lead.billBook?.refundPaid || 0));
+        }
+      }
+    }
+
     lead.currentStage = normalizedToStage;
 
     if (selectionMode) {
@@ -565,19 +739,68 @@ exports.updateLocationConfirmation = async (req, res) => {
     // Handle cancellation by candidate (FRD Section 13)
     if (isCancelled) {
       const prevStage = lead.currentStage;
-      lead.currentStage = 'CANCELLED';
-      await lead.save();
+      const totalReceived = getLeadTotalPaymentReceived(lead);
 
-      await logLeadHistory({
-        lead,
-        performedBy: req.user,
-        actionType: 'STAGE_TRANSFERRED',
-        fromStage: prevStage,
-        toStage: 'CANCELLED',
-        remarks: `Candidate cancelled location confirmation. Reason: ${cancellationReason || 'Candidate withdrawn'}`
-      });
+      if (totalReceived > 0) {
+        lead.currentStage = 'CANCELLED';
+        lead.isHold = false;
+        lead.closureStatus = 'REFUND_PENDING';
+        lead.closureDetails = {
+          closedAt: new Date(),
+          reason: cancellationReason || 'Candidate cancelled during location confirmation',
+          closedBy: req.user._id,
+          refundPayable: totalReceived,
+          refundPaid: lead.billBook?.refundPaid || 0,
+          refundBalance: Math.max(0, totalReceived - (lead.billBook?.refundPaid || 0)),
+          settlementDate: null
+        };
+        if (!lead.billBook) {
+          lead.billBook = { approvedRefund: totalReceived, refundPaid: 0, refundBalance: totalReceived, transactions: [] };
+        } else {
+          lead.billBook.approvedRefund = totalReceived;
+          lead.billBook.refundBalance = Math.max(0, totalReceived - (lead.billBook?.refundPaid || 0));
+        }
+        await lead.save();
 
-      return res.json({ success: true, message: 'Lead marked as CANCELLED per candidate request', data: lead });
+        await logLeadHistory({
+          lead,
+          performedBy: req.user,
+          actionType: 'CANDIDATE_CANCELLED',
+          fromStage: prevStage,
+          toStage: 'CANCELLED',
+          remarks: `Candidate cancelled location confirmation. Total Payment Received: ₹${totalReceived}. Queued for Refund Settlement. Reason: ${cancellationReason || 'Candidate withdrawn'}`
+        });
+
+        return res.json({
+          success: true,
+          actionTaken: 'CANCELLED',
+          totalReceived,
+          message: `Candidate marked as CANCELLED. Payment of ₹${totalReceived.toLocaleString('en-IN')} queued for Refund Settlement.`,
+          data: lead
+        });
+      } else {
+        lead.isHold = true;
+        lead.holdReason = cancellationReason || 'Candidate requested cancellation during location confirmation, but no payment received. Placed on HOLD.';
+        lead.closureStatus = 'CLOSED_NO_ADVANCE';
+        await lead.save();
+
+        await logLeadHistory({
+          lead,
+          performedBy: req.user,
+          actionType: 'CANDIDATE_PLACED_ON_HOLD',
+          fromStage: prevStage,
+          toStage: prevStage,
+          remarks: `Candidate attempted cancellation with ₹0 payment. Placed on HOLD per rule.`
+        });
+
+        return res.json({
+          success: true,
+          actionTaken: 'ON_HOLD',
+          totalReceived: 0,
+          message: 'Candidate has ₹0 payment (Service Fee / Medical Fee not received). As per company policy, candidate cannot be cancelled and has been placed on HOLD.',
+          data: lead
+        });
+      }
     }
 
     if (lead.locationConfirmation.editCount >= 4 && !isConfirmed) {
@@ -1989,10 +2212,8 @@ exports.confirmVisaDelay = async (req, res) => {
     const prevStage = lead.currentStage;
 
     if (action === 'CANCEL') {
-      lead.currentStage = 'CANCELLED';
-      lead.isHold = true;
-      lead.holdReason = candidateRemarks || 'Candidate refused delay and requested file cancellation';
-      
+      const totalReceived = getLeadTotalPaymentReceived(lead);
+
       lead.preVivaDetails.delayHistory.push({
         attempt: attemptNumber,
         delayDate: new Date(),
@@ -2002,21 +2223,66 @@ exports.confirmVisaDelay = async (req, res) => {
         candidateRemarks: candidateRemarks || 'Cancelled'
       });
 
-      await logLeadHistory({
-        lead,
-        performedBy: req.user,
-        actionType: 'VISA_DELAY_CANCELLED',
-        fromStage: prevStage,
-        toStage: 'CANCELLED',
-        remarks: `Candidate opted to cancel due to visa delay. Reason: ${candidateRemarks || reason || 'Unwilling to wait'}`
-      });
+      if (totalReceived > 0) {
+        lead.currentStage = 'CANCELLED';
+        lead.isHold = false;
+        lead.closureStatus = 'REFUND_PENDING';
+        lead.closureDetails = {
+          closedAt: new Date(),
+          reason: candidateRemarks || 'Candidate refused delay and requested file cancellation',
+          closedBy: req.user._id,
+          refundPayable: totalReceived,
+          refundPaid: lead.billBook?.refundPaid || 0,
+          refundBalance: Math.max(0, totalReceived - (lead.billBook?.refundPaid || 0)),
+          settlementDate: null
+        };
+        if (!lead.billBook) {
+          lead.billBook = { approvedRefund: totalReceived, refundPaid: 0, refundBalance: totalReceived, transactions: [] };
+        } else {
+          lead.billBook.approvedRefund = totalReceived;
+          lead.billBook.refundBalance = Math.max(0, totalReceived - (lead.billBook?.refundPaid || 0));
+        }
 
-      await lead.save();
-      return res.json({
-        success: true,
-        message: `Candidate ${lead.candidateName} has been cancelled per request.`,
-        data: lead
-      });
+        await logLeadHistory({
+          lead,
+          performedBy: req.user,
+          actionType: 'VISA_DELAY_CANCELLED',
+          fromStage: prevStage,
+          toStage: 'CANCELLED',
+          remarks: `Candidate opted to cancel due to visa delay. Payment received: ₹${totalReceived}. Queued for Refund Settlement. Reason: ${candidateRemarks || reason || 'Unwilling to wait'}`
+        });
+
+        await lead.save();
+        return res.json({
+          success: true,
+          actionTaken: 'CANCELLED',
+          totalReceived,
+          message: `Candidate ${lead.candidateName} cancelled. Total payment of ₹${totalReceived.toLocaleString('en-IN')} queued for Refund Settlement.`,
+          data: lead
+        });
+      } else {
+        lead.isHold = true;
+        lead.holdReason = candidateRemarks || 'Candidate requested cancellation during visa delay review, but no payment received. Placed on HOLD.';
+        lead.closureStatus = 'CLOSED_NO_ADVANCE';
+
+        await logLeadHistory({
+          lead,
+          performedBy: req.user,
+          actionType: 'CANDIDATE_PLACED_ON_HOLD',
+          fromStage: prevStage,
+          toStage: prevStage,
+          remarks: `Cancellation requested due to visa delay with ₹0 payment. Placed on HOLD per rule.`
+        });
+
+        await lead.save();
+        return res.json({
+          success: true,
+          actionTaken: 'ON_HOLD',
+          totalReceived: 0,
+          message: `Candidate has ₹0 payment (Service Fee / Medical Fee not received). Placed on HOLD as per company policy.`,
+          data: lead
+        });
+      }
     }
 
     // Otherwise Confirm Ready & Set New Date
@@ -2962,9 +3228,18 @@ exports.closeLeadFile = async (req, res) => {
     const validTypes = ['CLOSED_NO_ADVANCE', 'REFUND_PENDING', 'FINANCIAL_PENDING', 'FINAL_CLOSED'];
     const chosenType = validTypes.includes(closureType) ? closureType : 'CLOSED_NO_ADVANCE';
 
-    lead.closureStatus = chosenType;
-    if (chosenType === 'FINAL_CLOSED' || chosenType === 'CLOSED_NO_ADVANCE') {
+    const totalReceived = getLeadTotalPaymentReceived(lead);
+
+    if (totalReceived > 0) {
+      // Payment received -> eligible for CANCELLED with refund tracking
       lead.currentStage = 'CANCELLED';
+      lead.isHold = false;
+      lead.closureStatus = chosenType === 'FINAL_CLOSED' ? 'FINAL_CLOSED' : 'REFUND_PENDING';
+    } else {
+      // No payment received -> put on HOLD per policy
+      lead.isHold = true;
+      lead.holdReason = reason || 'File closed without payment. Candidate placed on HOLD per company policy.';
+      lead.closureStatus = 'CLOSED_NO_ADVANCE';
     }
 
     const numRefund = Number(refundPayable) || 0;
