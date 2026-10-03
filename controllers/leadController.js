@@ -745,16 +745,26 @@ exports.transferLeadStage = async (req, res) => {
 };
 
 // @desc    Update Location Confirmation (Max 4 Attempts allowed, moves to Pre-Viva when confirmed or CANCELLED)
+// @desc    Update Location Confirmation (Max 4 Attempts allowed, moves to Pre-Viva when confirmed or CANCELLED)
 // @route   PUT /api/leads/:id/location-confirmation
 // @access  Private
 exports.updateLocationConfirmation = async (req, res) => {
   try {
-    const { confirmedLocation, isConfirmed, isCancelled, cancellationReason } = req.body;
+    const { 
+      confirmedLocation, 
+      isConfirmed, 
+      isCancelled, 
+      cancellationReason,
+      medicalPdfShared,
+      medicalConditionsExplained,
+      recordingConfirmed,
+      recordingUrl
+    } = req.body;
     const lead = await Lead.findById(req.params.id);
 
     if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
-    // Handle cancellation by candidate (FRD Section 13)
+    // Handle cancellation by candidate (FRD Section 13 & Line 128)
     if (isCancelled) {
       const prevStage = lead.currentStage;
       const totalReceived = getLeadTotalPaymentReceived(lead);
@@ -806,6 +816,11 @@ exports.updateLocationConfirmation = async (req, res) => {
           data: lead
         });
       } else {
+        // FRD Line 128: No Advance file closure preserves Medical Confirmation PDF and Recording
+        if (medicalPdfShared !== undefined) lead.locationConfirmation.medicalPdfShared = Boolean(medicalPdfShared);
+        if (recordingConfirmed !== undefined) lead.locationConfirmation.recordingConfirmed = Boolean(recordingConfirmed);
+        if (recordingUrl !== undefined) lead.locationConfirmation.recordingUrl = recordingUrl;
+
         lead.isHold = true;
         lead.holdReason = cancellationReason || 'Candidate requested cancellation during location confirmation, but no payment received. Placed on HOLD.';
         lead.closureStatus = 'CLOSED_NO_ADVANCE';
@@ -817,14 +832,14 @@ exports.updateLocationConfirmation = async (req, res) => {
           actionType: 'CANDIDATE_PLACED_ON_HOLD',
           fromStage: prevStage,
           toStage: prevStage,
-          remarks: `Candidate attempted cancellation with ₹0 payment. Placed on HOLD per rule.`
+          remarks: `Candidate attempted cancellation with ₹0 payment. Preserved Medical PDF & Recording records. Placed on CLOSED_NO_ADVANCE / HOLD per FRD Line 128.`
         });
 
         return res.json({
           success: true,
           actionTaken: 'ON_HOLD',
           totalReceived: 0,
-          message: 'Candidate has ₹0 payment (Service Fee / Medical Fee not received). As per company policy, candidate cannot be cancelled and has been placed on HOLD.',
+          message: 'Candidate has ₹0 payment (Service Fee / Medical Fee not received). As per company policy, candidate cannot be cancelled and has been placed on HOLD (Closed / No Advance).',
           data: lead
         });
       }
@@ -853,9 +868,48 @@ exports.updateLocationConfirmation = async (req, res) => {
     }
 
     if (isConfirmed) {
+      // FRD Section 4 Step 7 & Line 230: Medical confirmation PDF, conditions accepted & recording are mandatory
+      if (medicalPdfShared !== undefined || recordingConfirmed !== undefined) {
+        if (!medicalPdfShared || !medicalConditionsExplained || !recordingConfirmed || !recordingUrl) {
+          return res.status(400).json({
+            success: false,
+            message: 'FRD Section 4 & 8 Compliance Error: Medical Confirmation PDF must be shared, conditions accepted, and call audio recording attached before forwarding to Pre-Viva.'
+          });
+        }
+      }
+
       lead.locationConfirmation.isConfirmed = true;
+      if (medicalPdfShared !== undefined) lead.locationConfirmation.medicalPdfShared = Boolean(medicalPdfShared);
+      if (medicalConditionsExplained !== undefined) lead.locationConfirmation.medicalConditionsExplained = Boolean(medicalConditionsExplained);
+      if (recordingConfirmed !== undefined) lead.locationConfirmation.recordingConfirmed = Boolean(recordingConfirmed);
+      if (recordingUrl !== undefined) lead.locationConfirmation.recordingUrl = recordingUrl;
+      lead.locationConfirmation.confirmedAt = new Date();
+
       lead.currentStage = 'PRE_VISA';
       lead.fileType = 'MOVE_FILE';
+
+      // Synchronize with 8 Mandatory Confirmations (DocType: MEDICAL_FITNESS_DECLARATION)
+      if (!lead.confirmations) lead.confirmations = [];
+      let medConf = lead.confirmations.find(c => c.docType === 'MEDICAL_FITNESS_DECLARATION' || c.docType === 'MEDICAL_CONFIRMATION');
+      if (medConf) {
+        medConf.status = 'CLIENT_CONFIRMED';
+        medConf.sharedChannel = 'WHATSAPP';
+        medConf.confirmedAt = new Date();
+        if (recordingUrl) medConf.recordingUrl = recordingUrl;
+        medConf.recordingType = 'CALL_RECORDING';
+        medConf.remarks = 'Medical conditions explained, accepted, and call audio recording attached during After-Medical location confirmation.';
+      } else {
+        lead.confirmations.push({
+          docType: 'MEDICAL_FITNESS_DECLARATION',
+          title: '3. Medical Fitness Declaration',
+          status: 'CLIENT_CONFIRMED',
+          sharedChannel: 'WHATSAPP',
+          confirmedAt: new Date(),
+          recordingUrl: recordingUrl || '',
+          recordingType: 'CALL_RECORDING',
+          remarks: 'Medical conditions explained, accepted, and call audio recording attached during After-Medical location confirmation.'
+        });
+      }
 
       await logLeadHistory({
         lead,
@@ -863,7 +917,7 @@ exports.updateLocationConfirmation = async (req, res) => {
         actionType: 'STAGE_TRANSFERRED',
         fromStage: lead.currentStage,
         toStage: 'PRE_VISA',
-        remarks: `Location confirmed as "${lead.locationConfirmation.confirmedLocation}". File forwarded to Pre-Viva Manager as MOVE FILE.`
+        remarks: `Location confirmed as "${lead.locationConfirmation.confirmedLocation}". Medical Confirmation PDF Shared & Call Recording Verified. File forwarded to Pre-Viva Manager as MOVE FILE.`
       });
     } else {
       lead.locationConfirmation.editCount += 1;
@@ -2494,7 +2548,10 @@ exports.applyVisa = async (req, res) => {
 // @access  Private (Visa Manager / Admin)
 exports.updateVisaStatus = async (req, res) => {
   try {
-    const { status, expectedDate, remarks, stampedDate } = req.body;
+    const { 
+      status, expectedDate, remarks, stampedDate,
+      appliedDate, expiryDate, visaNumber, notifyStaffHead 
+    } = req.body;
     const isValidId = mongoose.Types.ObjectId.isValid(req.params.id);
     let lead = isValidId ? await Lead.findById(req.params.id) : null;
     if (!lead) {
@@ -2508,18 +2565,41 @@ exports.updateVisaStatus = async (req, res) => {
     if (expectedDate) {
       lead.visaDetails.expectedDate = new Date(expectedDate);
     }
+    if (appliedDate) {
+      lead.visaDetails.appliedOn = new Date(appliedDate);
+    }
+    if (expiryDate) {
+      lead.visaDetails.expiryDate = new Date(expiryDate);
+    }
+    if (visaNumber) {
+      lead.visaDetails.visaNumber = visaNumber;
+    }
 
     lead.visaDetails.trackingHistory = lead.visaDetails.trackingHistory || [];
 
     if (status === 'APPROVED') {
       lead.visaDetails.trackingStage = 5;
       lead.visaDetails.stampedDate = stampedDate ? new Date(stampedDate) : new Date();
+      lead.visaDetails.notifiedToStaffHead = true;
+      lead.visaDetails.staffHeadNotifiedAt = new Date();
       lead.currentStage = 'VIVA_PLACEMENT'; // Step 17: Moves to Final Client Viva & Placement Desk
+      
+      const vNumStr = lead.visaDetails.visaNumber ? ` (Visa No: ${lead.visaDetails.visaNumber})` : '';
+      const expStr = lead.visaDetails.expiryDate ? ` [Expiry: ${new Date(lead.visaDetails.expiryDate).toLocaleDateString()}]` : '';
+      const appStr = lead.visaDetails.appliedOn ? ` [Applied: ${new Date(lead.visaDetails.appliedOn).toLocaleDateString()}]` : '';
+      
       lead.visaDetails.trackingHistory.push({
         date: new Date(),
         stage: 5,
-        event: `Visa Approved & Stamped successfully! ${remarks || ''}`,
+        event: `Visa Approved & Stamped${vNumStr}!${appStr}${expStr} Dispatched to Staff Head Directorate. ${remarks || ''}`,
         user: req.user.name
+      });
+
+      await logLeadHistory({
+        lead,
+        performedBy: req.user,
+        actionType: 'VISA_RECEIVED_NOTIFIED_STAFF_HEAD',
+        remarks: `Visa received & verified for ${lead.candidateName}${vNumStr}.${appStr}${expStr} Dispatched to Staff Head Directorate for flight clearance.`
       });
     } else if (status === 'DELAYED') {
       lead.visaDetails.revisionRequest = {
@@ -2534,6 +2614,12 @@ exports.updateVisaStatus = async (req, res) => {
         event: `Visa Stamping Delayed: ${remarks || 'Redirected to Pre-Viva Delay Review'}`,
         user: req.user.name
       });
+      await logLeadHistory({
+        lead,
+        performedBy: req.user,
+        actionType: 'VISA_STATUS_UPDATED',
+        remarks: `Visa status marked DELAYED: ${remarks || ''}`
+      });
     } else if (status === 'REJECTED') {
       lead.currentStage = 'REJECTED';
       lead.visaDetails.trackingHistory.push({
@@ -2542,6 +2628,12 @@ exports.updateVisaStatus = async (req, res) => {
         event: `Visa Application Rejected: ${remarks || 'Consular denial'}`,
         user: req.user.name
       });
+      await logLeadHistory({
+        lead,
+        performedBy: req.user,
+        actionType: 'VISA_STATUS_UPDATED',
+        remarks: `Visa application rejected: ${remarks || ''}`
+      });
     } else {
       lead.visaDetails.trackingHistory.push({
         date: new Date(),
@@ -2549,16 +2641,15 @@ exports.updateVisaStatus = async (req, res) => {
         event: `Visa Status updated to ${status}. ${remarks || ''}`,
         user: req.user.name
       });
+      await logLeadHistory({
+        lead,
+        performedBy: req.user,
+        actionType: 'VISA_STATUS_UPDATED',
+        remarks: `Visa status updated to ${status}. ${remarks || ''}`
+      });
     }
 
     await lead.save();
-
-    await logLeadHistory({
-      lead,
-      performedBy: req.user,
-      actionType: 'VISA_STATUS_UPDATED',
-      remarks: `Visa status updated to ${status}. ${remarks || ''}`
-    });
 
     res.json({
       success: true,
@@ -2610,7 +2701,7 @@ exports.verifyVisaDocuments = async (req, res) => {
 // @access  Private (Visa Manager / Admin)
 exports.updateVisaTracking = async (req, res) => {
   try {
-    const { stage, event, remarks, isDelayed } = req.body;
+    const { stage, event, remarks, isDelayed, stampedDate, expiryDate, visaNumber, appliedDate, notifiedToStaffHead } = req.body;
     const isValidId = mongoose.Types.ObjectId.isValid(req.params.id);
     let lead = isValidId ? await Lead.findById(req.params.id) : null;
     if (!lead) {
@@ -2625,6 +2716,15 @@ exports.updateVisaTracking = async (req, res) => {
     if (remarks) {
       lead.visaDetails.remarks = remarks;
     }
+    if (expiryDate) {
+      lead.visaDetails.expiryDate = new Date(expiryDate);
+    }
+    if (visaNumber) {
+      lead.visaDetails.visaNumber = visaNumber;
+    }
+    if (appliedDate) {
+      lead.visaDetails.appliedOn = new Date(appliedDate);
+    }
 
     lead.visaDetails.trackingHistory = lead.visaDetails.trackingHistory || [];
     lead.visaDetails.trackingHistory.push({
@@ -2636,7 +2736,9 @@ exports.updateVisaTracking = async (req, res) => {
 
     if (Number(stage) === 5) {
       lead.visaDetails.status = 'APPROVED';
-      lead.visaDetails.stampedDate = new Date();
+      lead.visaDetails.stampedDate = stampedDate ? new Date(stampedDate) : new Date();
+      lead.visaDetails.notifiedToStaffHead = notifiedToStaffHead !== undefined ? Boolean(notifiedToStaffHead) : true;
+      lead.visaDetails.staffHeadNotifiedAt = new Date();
       lead.currentStage = 'VIVA_PLACEMENT';
     }
 
@@ -2832,10 +2934,11 @@ exports.issuePlacementOfferLetter = async (req, res) => {
 // @access  Private
 exports.updatePlacementDeployment = async (req, res) => {
   try {
-    const {
+    const { 
       deployId, company, country, airline, flightNumber, pnr, sector,
       departureAirport, arrivalAirport, flightDate, flightTime, joiningDate,
-      poeStatus, baggage, pickupOfficer, campLocation, status, notes
+      poeStatus, baggage, pickupOfficer, campLocation, status, notes,
+      expectedFlightDate, confirmedTicketDate, videoAgreementDeclared
     } = req.body;
     const lead = await Lead.findById(req.params.id);
     if (!lead) return res.status(404).json({ success: false, message: 'Candidate lead not found' });
@@ -2845,28 +2948,44 @@ exports.updatePlacementDeployment = async (req, res) => {
 
     const genDeployId = deployId || lead.placementDetails.deployment.deployId || `DEP-${Math.floor(800 + Math.random() * 199)}`;
 
+    const currentDep = lead.placementDetails.deployment || {};
+    const determinedStatus = status || (confirmedTicketDate ? 'FLIGHT_BOOKED' : (currentDep.status || 'PENDING_TICKET'));
+
+    // Check if Candidate has completed Video Confirmation (Step 13 requirement)
+    const videoConf = (lead.confirmations || []).find(c => 
+      (c.docType === 'AFTER_VISA_CONFIRMATION' || c.docType === 'VISA_SUBMISSION_APPROVAL' || c.recordingType === 'VIDEO') &&
+      (c.status === 'CLIENT_CONFIRMED' || (c.recordingUrl && c.recordingUrl.trim().length > 0))
+    );
+    const hasVideoAgreement = Boolean(videoConf);
+
     lead.placementDetails.deployment = {
       deployId: genDeployId,
-      company: company || lead.placementDetails.deployment.company || '',
-      country: country || lead.placementDetails.deployment.country || '',
-      airline: airline || lead.placementDetails.deployment.airline || '',
-      flightNumber: flightNumber || lead.placementDetails.deployment.flightNumber || '',
-      pnr: pnr || lead.placementDetails.deployment.pnr || '',
-      sector: sector || lead.placementDetails.deployment.sector || '',
-      departureAirport: departureAirport || lead.placementDetails.deployment.departureAirport || '',
-      arrivalAirport: arrivalAirport || lead.placementDetails.deployment.arrivalAirport || '',
-      flightDate: flightDate ? new Date(flightDate) : lead.placementDetails.deployment.flightDate,
-      flightTime: flightTime || lead.placementDetails.deployment.flightTime || '',
-      joiningDate: joiningDate ? new Date(joiningDate) : lead.placementDetails.deployment.joiningDate,
-      poeStatus: poeStatus || lead.placementDetails.deployment.poeStatus || 'POE Cleared',
-      baggage: baggage || lead.placementDetails.deployment.baggage || '30 KG Check-in + 7 KG Cabin',
-      pickupOfficer: pickupOfficer || lead.placementDetails.deployment.pickupOfficer || '',
-      campLocation: campLocation || lead.placementDetails.deployment.campLocation || '',
-      status: status || lead.placementDetails.deployment.status || 'FLIGHT_BOOKED',
-      notes: notes || lead.placementDetails.deployment.notes || ''
+      company: company || currentDep.company || '',
+      country: country || currentDep.country || '',
+      airline: airline || currentDep.airline || '',
+      flightNumber: flightNumber || currentDep.flightNumber || '',
+      pnr: pnr || currentDep.pnr || '',
+      sector: sector || currentDep.sector || '',
+      departureAirport: departureAirport || currentDep.departureAirport || '',
+      arrivalAirport: arrivalAirport || currentDep.arrivalAirport || '',
+      expectedFlightDate: expectedFlightDate ? new Date(expectedFlightDate) : currentDep.expectedFlightDate,
+      confirmedTicketDate: confirmedTicketDate ? new Date(confirmedTicketDate) : currentDep.confirmedTicketDate,
+      flightDate: flightDate ? new Date(flightDate) : currentDep.flightDate,
+      flightTime: flightTime || currentDep.flightTime || '',
+      joiningDate: joiningDate ? new Date(joiningDate) : currentDep.joiningDate,
+      poeStatus: poeStatus || currentDep.poeStatus || 'POE Cleared',
+      baggage: baggage || currentDep.baggage || '30 KG Check-in + 7 KG Cabin',
+      pickupOfficer: pickupOfficer || currentDep.pickupOfficer || '',
+      campLocation: campLocation || currentDep.campLocation || '',
+      status: determinedStatus,
+      videoAgreementVerified: hasVideoAgreement,
+      videoAgreementDeclared: Boolean(videoAgreementDeclared),
+      videoAgreementRecordingUrl: videoConf?.recordingUrl || currentDep.videoAgreementRecordingUrl || '',
+      videoAgreementStatus: hasVideoAgreement ? 'VERIFIED' : (videoAgreementDeclared ? 'DECLARED' : 'PENDING'),
+      notes: notes || currentDep.notes || ''
     };
 
-    if (status === 'JOINED_ON_SITE') {
+    if (determinedStatus === 'DEPARTED' || determinedStatus === 'JOINED_ON_SITE') {
       lead.currentStage = 'COMPLETED';
     }
 
@@ -2876,7 +2995,7 @@ exports.updatePlacementDeployment = async (req, res) => {
       lead,
       performedBy: req.user,
       actionType: 'FLIGHT_JOINING_UPDATED',
-      remarks: `Deployment updated for ${lead.candidateName}: ${status} (PNR: ${pnr || 'N/A'}, Airline: ${airline || 'N/A'})`
+      remarks: `Deployment updated for ${lead.candidateName}: ${determinedStatus} (PNR: ${pnr || 'N/A'}, Airline: ${airline || 'N/A'}, Video Agreement: ${hasVideoAgreement ? 'VERIFIED' : (videoAgreementDeclared ? 'DECLARED' : 'PENDING')})`
     });
 
     res.json({

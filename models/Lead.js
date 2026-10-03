@@ -234,7 +234,12 @@ const LeadSchema = new mongoose.Schema({
   locationConfirmation: {
     confirmedLocation: { type: String, default: '' },
     editCount: { type: Number, default: 0, max: 4 }, // Max 4 edit attempts allowed by calling staff
-    isConfirmed: { type: Boolean, default: false }
+    isConfirmed: { type: Boolean, default: false },
+    medicalPdfShared: { type: Boolean, default: false },
+    medicalConditionsExplained: { type: Boolean, default: false },
+    recordingConfirmed: { type: Boolean, default: false },
+    recordingUrl: { type: String, default: '' },
+    confirmedAt: { type: Date, default: null }
   },
 
   fileType: { 
@@ -253,6 +258,10 @@ const LeadSchema = new mongoose.Schema({
     appliedOn: { type: Date, default: null },
     expectedDate: { type: Date, default: null },
     stampedDate: { type: Date, default: null },
+    expiryDate: { type: Date, default: null },
+    visaNumber: { type: String, default: '' },
+    notifiedToStaffHead: { type: Boolean, default: false },
+    staffHeadNotifiedAt: { type: Date, default: null },
     fee: { type: String, default: '' },
     status: {
       type: String,
@@ -404,6 +413,10 @@ const LeadSchema = new mongoose.Schema({
         enum: ['PENDING_TICKET', 'FLIGHT_BOOKED', 'DEPARTED', 'JOINED_ON_SITE', 'NO_SHOW'],
         default: 'PENDING_TICKET'
       },
+      videoAgreementVerified: { type: Boolean, default: false },
+      videoAgreementDeclared: { type: Boolean, default: false },
+      videoAgreementRecordingUrl: { type: String, default: '' },
+      videoAgreementStatus: { type: String, enum: ['VERIFIED', 'DECLARED', 'PENDING'], default: 'PENDING' },
       notes: { type: String, default: '' }
     }
   },

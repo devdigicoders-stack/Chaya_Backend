@@ -161,6 +161,13 @@ const runFullTest = async () => {
     }, adminHeaders);
     console.log(`✅ Medical Result: FIT -> File transferred to: ${medResultRes.data.data.currentStage} (Staff Head Desk)`);
 
+    // 9b. Send Medical Report PDF (FRD Step 7 Rule)
+    console.log('\n[Step 9b] Sending Medical Report PDF to Candidate...');
+    const sendRepRes = await axios.post(`${BASE_URL}/leads/${leadId}/medical-report-send`, {
+      reportUrl: `https://storage.chhayainternational.com/reports/MED-${randomSuffix}.pdf`
+    }, adminHeaders);
+    console.log(`✅ Medical Report PDF Dispatched: ${sendRepRes.data.message}`);
+
     // 10. Record Payment Booking (Separate Service Fee & Medical Fee - FRD Sec 11 & 21)
     console.log('\n[Step 10] Recording Payment Booking (Service Fee + Medical Fee - FRD Sec 11)...');
     const payBookingRes = await axios.put(`${BASE_URL}/leads/${leadId}/payment-booking`, {
@@ -170,6 +177,9 @@ const runFullTest = async () => {
       medicalPaid: 2500,
       paymentMode: 'UPI',
       receiptNo: `REC-ADV-${randomSuffix}`,
+      afterAdvanceConfirmed: true,
+      recordingConfirmed: true,
+      recordingUrl: `https://drive.google.com/chhaya/recordings/REC-ADV-${randomSuffix}.mp3`,
       remarks: 'Advance booking received via GooglePay'
     }, adminHeaders);
     console.log(`✅ Payment Recorded: Service ₹5000/₹9500, Medical ₹2500/₹2500. Total Paid: ₹${payBookingRes.data.data.paymentDetails.totalPaid}, Status: ${payBookingRes.data.data.paymentDetails.paymentStatus}`);
@@ -183,17 +193,22 @@ const runFullTest = async () => {
     }, staffHeadHeaders);
     console.log(`✅ Candidate Swapped: ${swapRes.data.message}`);
 
-    // 12. Location Confirmation (Testing 4-Attempt Rule & Confirmation - FRD Sec 13)
+    // 12. Location Confirmation (Testing 4-Attempt Rule & Step 6 Medical Confirmation - FRD Sec 13)
     console.log('\n[Step 12] Calling Staff Location Confirmation (FRD Sec 13)...');
     // Attempt 1: Edit Location
     await axios.put(`${BASE_URL}/leads/${leadId}/location-confirmation`, {
       confirmedLocation: 'Qatar',
       isConfirmed: false
     }, callingStaff2Headers);
-    // Attempt 2: Final Confirmation
+    // Attempt 2: Final Confirmation with Step 6 Medical Confirmation Ticks
     const locRes = await axios.put(`${BASE_URL}/leads/${leadId}/location-confirmation`, {
       confirmedLocation: 'Saudi Arabia (NEOM Project)',
-      isConfirmed: true
+      isConfirmed: true,
+      medicalPdfShared: true,
+      medicalConditionsExplained: true,
+      recordingConfirmed: true,
+      recordingUrl: `https://drive.google.com/chhaya/recordings/CONF-CALL-${randomSuffix}.mp3`,
+      remarks: 'Candidate confirmed Saudi location and accepted medical terms.'
     }, callingStaff2Headers);
     console.log(`✅ Location Confirmed: "${locRes.data.data.locationConfirmation.confirmedLocation}". File Type: ${locRes.data.data.fileType}, New Stage: ${locRes.data.data.currentStage}`);
 
@@ -245,7 +260,12 @@ const runFullTest = async () => {
     const trackingRes = await axios.put(`${BASE_URL}/leads/${leadId}/visa-tracking`, {
       stage: 5,
       event: 'Visa Stamped by Embassy of Saudi Arabia',
-      remarks: 'Passport stamped with 2-year multi-entry work permit'
+      remarks: 'Passport stamped with 2-year multi-entry work permit',
+      stampedDate: new Date().toISOString(),
+      expiryDate: new Date(Date.now() + 730 * 86400000).toISOString(),
+      visaNumber: `SAU-VISA-${randomSuffix}`,
+      appliedDate: new Date(Date.now() - 15 * 86400000).toISOString(),
+      notifiedToStaffHead: true
     }, adminHeaders);
     console.log(`✅ Visa Tracking: Stage 5 reached, Visa Status: ${trackingRes.data.data.visaDetails.status}`);
 
@@ -315,7 +335,10 @@ const runFullTest = async () => {
       flightTime: '04:30 AM',
       status: 'JOINED_ON_SITE',
       pickupOfficer: 'Mustafa Al-Khatib (Site Camp Liaison)',
-      campLocation: 'NEOM Sector 4 Construction Camp'
+      campLocation: 'NEOM Sector 4 Construction Camp',
+      videoAgreementDeclared: true,
+      videoAgreementVerified: true,
+      videoAgreementRecordingUrl: `https://drive.google.com/chhaya/videos/VIDEO-AGREE-${randomSuffix}.mp4`
     }, adminHeaders);
     console.log(`✅ Flight Booking & Joining Recorded: Stage is now "${deployRes.data.data.currentStage}"!`);
 
