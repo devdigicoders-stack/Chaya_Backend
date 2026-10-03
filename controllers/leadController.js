@@ -403,6 +403,7 @@ const getLeadTotalPaymentReceived = (lead) => {
   }
   return total;
 };
+exports.getLeadTotalPaymentReceived = getLeadTotalPaymentReceived;
 
 // @desc    Dynamic Cancel or Hold Lead (Payment Received -> CANCELLED & Refund Settlement; No Payment -> ON_HOLD)
 // @route   POST /api/leads/:id/cancel-or-hold
