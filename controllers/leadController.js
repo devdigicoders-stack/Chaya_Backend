@@ -3414,21 +3414,45 @@ exports.saveConfirmation = async (req, res) => {
     const lead = await Lead.findById(req.params.id);
     if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
+    if (!docType) {
+      return res.status(400).json({ success: false, message: 'Document type is required' });
+    }
+
     if (!lead.confirmations) lead.confirmations = [];
 
     let conf = lead.confirmations.find(c => c.docType === docType);
+    const effectivePdfUrl = (pdfUrl !== undefined ? String(pdfUrl) : (conf?.pdfUrl || '')).trim();
+    const effectiveRecordingUrl = (recordingUrl !== undefined ? String(recordingUrl) : (conf?.recordingUrl || '')).trim();
+
+    // 1. Mandatory Document validation
+    if (!effectivePdfUrl) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Signed PDF document is mandatory. Please upload or auto-generate the document before saving.' 
+      });
+    }
+
+    // 2. Mandatory Recording evidence for CLIENT_CONFIRMED
+    const targetStatus = status || conf?.status || 'GENERATED';
+    if (targetStatus === 'CLIENT_CONFIRMED' && !effectiveRecordingUrl) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Audio/Video recording evidence is mandatory when marking a confirmation as Client Confirmed (FRD Section 8).' 
+      });
+    }
+
     if (!conf) {
       conf = {
         docType,
         title: title || docType.replace(/_/g, ' '),
-        status: status || 'GENERATED',
+        status: targetStatus,
         version: 1,
         generatedAt: new Date(),
-        sharedAt: status === 'SHARED' ? new Date() : null,
+        sharedAt: targetStatus === 'SHARED' ? new Date() : null,
         sharedChannel: sharedChannel || 'WHATSAPP',
-        confirmedAt: status === 'CLIENT_CONFIRMED' ? new Date() : null,
-        pdfUrl: pdfUrl || '',
-        recordingUrl: recordingUrl || '',
+        confirmedAt: targetStatus === 'CLIENT_CONFIRMED' ? new Date() : null,
+        pdfUrl: effectivePdfUrl,
+        recordingUrl: effectiveRecordingUrl,
         recordingType: recordingType || 'AUDIO',
         remarks: remarks || '',
         handledBy: req.user._id,
@@ -3436,11 +3460,11 @@ exports.saveConfirmation = async (req, res) => {
       };
       lead.confirmations.push(conf);
     } else {
-      conf.status = status || conf.status;
-      if (status === 'SHARED' && !conf.sharedAt) conf.sharedAt = new Date();
-      if (status === 'CLIENT_CONFIRMED' && !conf.confirmedAt) conf.confirmedAt = new Date();
-      if (pdfUrl) conf.pdfUrl = pdfUrl;
-      if (recordingUrl) conf.recordingUrl = recordingUrl;
+      conf.status = targetStatus;
+      if (targetStatus === 'SHARED' && !conf.sharedAt) conf.sharedAt = new Date();
+      if (targetStatus === 'CLIENT_CONFIRMED' && !conf.confirmedAt) conf.confirmedAt = new Date();
+      conf.pdfUrl = effectivePdfUrl;
+      conf.recordingUrl = effectiveRecordingUrl;
       if (recordingType) conf.recordingType = recordingType;
       if (remarks) conf.remarks = remarks;
       conf.handledBy = req.user._id;
@@ -3453,7 +3477,7 @@ exports.saveConfirmation = async (req, res) => {
       lead,
       performedBy: req.user,
       actionType: 'CONFIRMATION_UPDATED',
-      remarks: `${docType.replace(/_/g, ' ')} set to ${status || 'UPDATED'}${recordingUrl ? ' (Recording Attached)' : ''}`
+      remarks: `${docType.replace(/_/g, ' ')} set to ${targetStatus}${effectiveRecordingUrl ? ' (Recording Attached)' : ''}`
     });
 
     res.json({ success: true, message: `Confirmation ${docType} updated`, data: lead.confirmations });
