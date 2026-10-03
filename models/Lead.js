@@ -106,6 +106,8 @@ const LeadSchema = new mongoose.Schema({
     slipNo: { type: String, default: '' },
     medicalFee: { type: Number, default: 0 },
     reportUrl: { type: String, default: '' },
+    isReportSent: { type: Boolean, default: false },
+    reportSentAt: { type: Date, default: null },
     validity: { type: String, default: '' },
     remarks: { type: String, default: '' },
     tests: [{
@@ -138,6 +140,9 @@ const LeadSchema = new mongoose.Schema({
     paymentMode: { type: String, default: 'UPI' },
     receiptNo: { type: String, default: '' },
     lastPaymentDate: { type: Date, default: null },
+    afterAdvanceConfirmed: { type: Boolean, default: false },
+    recordingConfirmed: { type: Boolean, default: false },
+    recordingUrl: { type: String, default: '' },
     history: [
       {
         amount: { type: Number, required: true },
@@ -218,6 +223,9 @@ const LeadSchema = new mongoose.Schema({
         verifiedBy: { type: String, default: '' },
         verifiedAt: { type: Date, default: null },
         remarks: { type: String, default: '' },
+        afterAdvanceConfirmed: { type: Boolean, default: false },
+        recordingConfirmed: { type: Boolean, default: false },
+        recordingUrl: { type: String, default: '' },
         date: { type: Date, default: Date.now }
       }
     ]

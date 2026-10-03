@@ -19,6 +19,7 @@ const {
   checkInMedicalCandidate,
   saveMedicalTests,
   submitMedicalResult,
+  sendMedicalReportPdf,
   recordPaymentBooking,
   recordFinalPayment,
   verifyPreVivaDocs,
@@ -87,6 +88,7 @@ router.put('/:id/medical-schedule', protect, scheduleMedicalAppointment);
 router.put('/:id/medical-checkin', protect, checkInMedicalCandidate);
 router.put('/:id/medical-tests', protect, saveMedicalTests);
 router.put('/:id/medical-result', protect, submitMedicalResult);
+router.post('/:id/medical-report-send', protect, sendMedicalReportPdf);
 router.put('/:id/payment-booking', protect, recordPaymentBooking);
 router.put('/:id/final-payment', protect, recordFinalPayment);
 

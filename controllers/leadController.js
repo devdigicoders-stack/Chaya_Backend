@@ -1860,12 +1860,56 @@ exports.submitMedicalResult = async (req, res) => {
   }
 };
 
+// @desc    Send or Upload Medical Report PDF to candidate (Required before Advance Payment)
+// @route   POST /api/leads/:id/medical-report-send
+// @access  Private (Medical Team, Calling Staff, Staff Head, Admin)
+exports.sendMedicalReportPdf = async (req, res) => {
+  try {
+    const { reportUrl } = req.body;
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Candidate lead not found' });
+
+    if (!lead.medicalDetails) lead.medicalDetails = {};
+    if (reportUrl) lead.medicalDetails.reportUrl = reportUrl;
+    lead.medicalDetails.isReportSent = true;
+    lead.medicalDetails.reportSentAt = new Date();
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'DOCUMENT_UPLOADED',
+      remarks: `Official Medical Report PDF sent to candidate by ${req.user.name}. Advance payment collection unlocked. File: ${lead.medicalDetails.reportUrl || 'Delivered'}`
+    });
+
+    res.json({
+      success: true,
+      message: `Medical Report PDF sent to ${lead.candidateName}. Advance Payment is now unlocked!`,
+      data: lead.medicalDetails
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
 // @desc    Record Payment Booking with separate Service Fee & Medical Fee (FRD Section 11 & 21)
 // @route   PUT /api/leads/:id/payment-booking
 // @access  Private (Medical Team, Accounts, Admin, Staff Head)
 exports.recordPaymentBooking = async (req, res) => {
   try {
-    const { serviceFee, servicePaid, medicalFee, medicalPaid, paymentMode, receiptNo, remarks } = req.body;
+    const { 
+      serviceFee, 
+      servicePaid, 
+      medicalFee, 
+      medicalPaid, 
+      paymentMode, 
+      receiptNo, 
+      remarks,
+      afterAdvanceConfirmed,
+      recordingConfirmed,
+      recordingUrl
+    } = req.body;
     const lead = await Lead.findById(req.params.id);
 
     if (!lead) {
@@ -1878,6 +1922,35 @@ exports.recordPaymentBooking = async (req, res) => {
     const sPaid = servicePaid !== undefined ? Number(servicePaid) : (lead.paymentDetails.servicePaid || 0);
     const mFee = medicalFee !== undefined ? Number(medicalFee) : (lead.paymentDetails.medicalFee || 2500);
     const mPaid = medicalPaid !== undefined ? Number(medicalPaid) : (lead.paymentDetails.medicalPaid || 0);
+
+    // Strict Business Rules: Medical Report PDF & Confirmation checks before Advance Payment
+    if (sPaid > 0) {
+      const hasReport = Boolean(lead.medicalDetails?.reportUrl || lead.medicalDetails?.isReportSent);
+      if (!hasReport) {
+        return res.status(400).json({
+          success: false,
+          message: 'Medical Report PDF must be sent/uploaded to candidate before advance payment can be collected!'
+        });
+      }
+
+      if (!afterAdvanceConfirmed || !recordingConfirmed) {
+        return res.status(400).json({
+          success: false,
+          message: "Both 'After Advance Confirmation' and 'Recording Confirmation' checkboxes must be ticked to save advance payment."
+        });
+      }
+
+      if (!recordingUrl || !recordingUrl.toString().trim()) {
+        return res.status(400).json({
+          success: false,
+          message: "Call recording audio file/URL is strictly required to save advance payment."
+        });
+      }
+
+      lead.paymentDetails.afterAdvanceConfirmed = true;
+      lead.paymentDetails.recordingConfirmed = true;
+      lead.paymentDetails.recordingUrl = recordingUrl.toString().trim();
+    }
 
     const totalCollected = sPaid + mPaid;
     const totalRequired = sFee + mFee;
@@ -3070,6 +3143,31 @@ exports.addBillBookTransaction = async (req, res) => {
     const prefix = isRefund ? 'REF' : 'REC';
     const receiptNo = `BB-${prefix}-${Math.floor(100000 + Math.random() * 900000)}`;
 
+    // Strict Business Rules: Medical Report PDF & Confirmation checks before Advance Payment
+    if ((head === 'ADVANCE' || type === 'ADVANCE') && !isRefund) {
+      const hasReport = Boolean(lead.medicalDetails?.reportUrl || lead.medicalDetails?.isReportSent);
+      if (!hasReport) {
+        return res.status(400).json({
+          success: false,
+          message: 'Medical Report PDF must be sent/uploaded to candidate before advance payment can be recorded in Bill Book!'
+        });
+      }
+
+      if (!req.body.afterAdvanceConfirmed || !req.body.recordingConfirmed) {
+        return res.status(400).json({
+          success: false,
+          message: "Both 'After Advance Confirmation' and 'Recording Confirmation' checkboxes must be ticked to save advance payment."
+        });
+      }
+
+      if (!req.body.recordingUrl || !req.body.recordingUrl.toString().trim()) {
+        return res.status(400).json({
+          success: false,
+          message: "Call recording audio file/URL is strictly required to save advance payment."
+        });
+      }
+    }
+
     const newTx = {
       receiptNo,
       type: type || 'PAYMENT',
@@ -3083,6 +3181,9 @@ exports.addBillBookTransaction = async (req, res) => {
       verifiedBy: (req.user.role === 'ACCOUNTS' || req.user.role === 'ADMIN') ? req.user.name : '',
       verifiedAt: (req.user.role === 'ACCOUNTS' || req.user.role === 'ADMIN') ? new Date() : null,
       remarks: remarks || '',
+      afterAdvanceConfirmed: Boolean(req.body.afterAdvanceConfirmed),
+      recordingConfirmed: Boolean(req.body.recordingConfirmed),
+      recordingUrl: req.body.recordingUrl ? req.body.recordingUrl.toString().trim() : '',
       date: new Date()
     };
 
