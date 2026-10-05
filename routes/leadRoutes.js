@@ -74,10 +74,10 @@ router.post('/', protect, authorize('ADMIN', 'DATA_CONTROLLER', 'CALLING_STAFF',
 router.post('/bulk-import', protect, authorize('ADMIN', 'DATA_CONTROLLER', 'STAFF_HEAD'), bulkImportLeads);
 
 // 3. Staff Assignment & Workflow Moves (FRD Section 6 & 12)
-router.post('/assign-staff', protect, authorize('ADMIN', 'STAFF_HEAD'), assignLeadsToCallingStaff);
-router.post('/distribute-round-robin', protect, authorize('ADMIN', 'STAFF_HEAD'), distributeLeadsRoundRobin);
-router.post('/bulk-reassign-staff', protect, authorize('ADMIN', 'STAFF_HEAD'), bulkReassignCallingStaff);
-router.put('/:id/reassign-staff', protect, authorize('ADMIN', 'STAFF_HEAD'), reassignLeadCallingStaff);
+router.post('/assign-staff', protect, authorize('ADMIN', 'STAFF_HEAD', 'DATA_CONTROLLER'), assignLeadsToCallingStaff);
+router.post('/distribute-round-robin', protect, authorize('ADMIN', 'STAFF_HEAD', 'DATA_CONTROLLER'), distributeLeadsRoundRobin);
+router.post('/bulk-reassign-staff', protect, authorize('ADMIN', 'STAFF_HEAD', 'DATA_CONTROLLER'), bulkReassignCallingStaff);
+router.put('/:id/reassign-staff', protect, authorize('ADMIN', 'STAFF_HEAD', 'DATA_CONTROLLER'), reassignLeadCallingStaff);
 router.put('/:id/categorize', protect, categorizeLead);
 router.put('/:id/transfer', protect, validateTransferChecklist, transferLeadStage);
 router.put('/:id/location-confirmation', protect, updateLocationConfirmation);
