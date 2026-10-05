@@ -582,6 +582,18 @@ exports.getPublicRoles = async (req, res) => {
   try {
     const roleDefinitions = [
       {
+        id: 'data_controller',
+        backendRole: 'DATA_CONTROLLER',
+        title: 'Data Controller',
+        subtitle: 'Lead Intake, Import & Pool Distribution',
+        icon: 'hub_rounded',
+        iconBg: '#E0F2FE',
+        iconColor: '#0284C7',
+        colorHex: '#0284C7',
+        bgHex: '#E0F2FE',
+        sortOrder: 1
+      },
+      {
         id: 'staff_head',
         backendRole: 'STAFF_HEAD',
         title: 'Staff Head',
@@ -591,7 +603,7 @@ exports.getPublicRoles = async (req, res) => {
         iconColor: '#2563EB',
         colorHex: '#2563EB',
         bgHex: '#E8F2FF',
-        sortOrder: 1
+        sortOrder: 2
       },
       {
         id: 'calling_staff',
