@@ -510,6 +510,150 @@ exports.cancelOrHoldLead = async (req, res) => {
   }
 };
 
+// ============================================================================
+// STEP 01 FLOW: DATA CONTROLLER / ADMIN ASSIGNMENT TO STAFF HEAD (HEAD STAFF)
+// Flow: Leads -> Data Controller/Admin Pool -> Staff Head -> Calling Staff
+// ============================================================================
+
+// @desc    Assign selective leads to Staff Head (from Data Controller or Admin)
+// @route   POST /api/leads/assign-staff-head
+// @access  Private (Data Controller, Admin)
+exports.assignLeadsToStaffHead = async (req, res) => {
+  try {
+    const { leadIds, staffHeadId, remarks } = req.body;
+
+    if (!leadIds || !Array.isArray(leadIds) || leadIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'Please provide leadIds array to assign to Staff Head' });
+    }
+
+    if (!staffHeadId) {
+      return res.status(400).json({ success: false, message: 'Please select a Head Staff (Staff Head) member' });
+    }
+
+    const staffHeadUser = await User.findById(staffHeadId);
+    if (!staffHeadUser || staffHeadUser.role !== 'STAFF_HEAD') {
+      return res.status(400).json({ success: false, message: 'Selected officer is not a valid Staff Head' });
+    }
+
+    const leads = await Lead.find({ _id: { $in: leadIds } });
+    if (!leads.length) {
+      return res.status(404).json({ success: false, message: 'No matching leads found' });
+    }
+
+    const updatedLeads = [];
+
+    for (const lead of leads) {
+      const prevStage = lead.currentStage;
+      lead.assignedStaffHead = staffHeadUser._id;
+      lead.assignedCallingStaff = null;
+      lead.currentStage = 'STAFF_HEAD_HANDLING';
+      lead.activeHolder = {
+        user: staffHeadUser._id,
+        name: staffHeadUser.name,
+        role: 'STAFF_HEAD',
+        assignedAt: new Date()
+      };
+      await lead.save();
+
+      await logLeadHistory({
+        lead,
+        performedBy: req.user,
+        actionType: 'ASSIGNED_TO_STAFF_HEAD',
+        fromStage: prevStage,
+        toStage: lead.currentStage,
+        remarks: remarks || `Transferred lead from Data Controller (${req.user.name}) to Staff Head: ${staffHeadUser.name}`
+      });
+
+      updatedLeads.push(lead);
+    }
+
+    res.json({
+      success: true,
+      message: `Successfully transferred ${updatedLeads.length} lead(s) to Staff Head: ${staffHeadUser.name}`,
+      data: updatedLeads
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Distribute leads equally / round-robin across active Staff Heads
+// @route   POST /api/leads/distribute-staff-head-round-robin
+// @access  Private (Data Controller, Admin)
+exports.distributeLeadsToStaffHeadRoundRobin = async (req, res) => {
+  try {
+    const { leadIds, staffHeadIds } = req.body;
+
+    if (!leadIds || !Array.isArray(leadIds) || leadIds.length === 0) {
+      return res.status(400).json({ success: false, message: 'Please provide leadIds array for distribution' });
+    }
+
+    let headQuery = { role: 'STAFF_HEAD', isActive: true };
+    if (staffHeadIds && Array.isArray(staffHeadIds) && staffHeadIds.length > 0) {
+      headQuery._id = { $in: staffHeadIds };
+    }
+
+    const staffHeads = await User.find(headQuery);
+    if (!staffHeads.length) {
+      return res.status(400).json({ success: false, message: 'No active Staff Head members found in the system' });
+    }
+
+    const leads = await Lead.find({ _id: { $in: leadIds } });
+    if (!leads.length) {
+      return res.status(404).json({ success: false, message: 'No leads found to distribute' });
+    }
+
+    const distributionResult = {};
+    staffHeads.forEach(sh => {
+      distributionResult[sh._id.toString()] = { staffHead: sh, count: 0 };
+    });
+
+    for (let i = 0; i < leads.length; i++) {
+      const lead = leads[i];
+      const assignedHead = staffHeads[i % staffHeads.length];
+      const prevStage = lead.currentStage;
+
+      lead.assignedStaffHead = assignedHead._id;
+      lead.assignedCallingStaff = null;
+      lead.currentStage = 'STAFF_HEAD_HANDLING';
+      lead.activeHolder = {
+        user: assignedHead._id,
+        name: assignedHead.name,
+        role: 'STAFF_HEAD',
+        assignedAt: new Date()
+      };
+      await lead.save();
+
+      await logLeadHistory({
+        lead,
+        performedBy: req.user,
+        actionType: 'ASSIGNED_TO_STAFF_HEAD',
+        fromStage: prevStage,
+        toStage: lead.currentStage,
+        remarks: `Round-robin distributed from Data Controller to Staff Head: ${assignedHead.name}`
+      });
+
+      distributionResult[assignedHead._id.toString()].count++;
+    }
+
+    res.json({
+      success: true,
+      message: `Successfully distributed ${leads.length} lead(s) equally across ${staffHeads.length} Staff Head(s)`,
+      distribution: Object.values(distributionResult).map(d => ({
+        staffHeadId: d.staffHead._id,
+        staffHeadName: d.staffHead.name,
+        assignedCount: d.count
+      }))
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// ============================================================================
+// STEP 02 FLOW: STAFF HEAD ASSIGNMENT TO CALLING STAFF
+// ============================================================================
+
 // @desc    Manual Selective Lead Distribution by Staff Head to Calling Staff (No auto equal split)
 // @route   POST /api/leads/assign-staff
 // @access  Private (Staff Head / Admin)
@@ -583,7 +727,15 @@ exports.assignLeadsToCallingStaff = async (req, res) => {
       lead.assignedCallingStaff = callingStaffUser._id;
       if (req.user.role === 'STAFF_HEAD') {
         lead.assignedStaffHead = req.user._id;
+      } else if (!lead.assignedStaffHead && callingStaffUser.teamHeadId) {
+        lead.assignedStaffHead = callingStaffUser.teamHeadId;
       }
+      lead.activeHolder = {
+        user: callingStaffUser._id,
+        name: callingStaffUser.name,
+        role: 'CALLING_STAFF',
+        assignedAt: new Date()
+      };
       lead.currentStage = 'CALLING_SCREENING';
       await lead.save();
 
@@ -953,27 +1105,52 @@ exports.getLeads = async (req, res) => {
     if (req.user.role === 'STAFF_HEAD') {
       const callingStaffUnderHead = await User.find({ teamHeadId: req.user._id }).select('_id');
       let staffIds = callingStaffUnderHead.map(u => u._id);
-      if (staffIds.length === 0) {
-        const allCalling = await User.find({ role: 'CALLING_STAFF' }).select('_id');
-        staffIds = allCalling.map(u => u._id);
-      }
 
-      if (stage === 'UNASSIGNED') {
+      // Staff Head lead scope: Only leads assigned to this Staff Head or their calling staff!
+      // They NEVER see raw unassigned intake leads (where assignedStaffHead is null).
+      conditions.push({
+        $or: [
+          { assignedStaffHead: req.user._id },
+          ...(staffIds.length > 0 ? [{ assignedCallingStaff: { $in: staffIds } }] : [])
+        ]
+      });
+
+      if (stage === 'UNASSIGNED' || stage === 'STAFF_HEAD_HANDLING' || req.query.headQueue === 'true') {
+        // Queue waiting for Staff Head to distribute to Calling Staff
         conditions.push({
-          $or: [
-            { currentStage: 'UNASSIGNED' },
-            { assignedCallingStaff: null }
-          ]
+          assignedStaffHead: req.user._id,
+          assignedCallingStaff: null
         });
       } else if (stage === 'ALL' || req.query.allPool === 'true') {
-        // Staff Head full lead pool visibility
+        // Full team pool under this staff head
       } else if (stage) {
         conditions.push({ currentStage: stage });
-      } else {
-        // Default Staff Head view: all operational pool leads
       }
     } else if (req.user.role === 'CALLING_STAFF') {
       conditions.push({ assignedCallingStaff: req.user._id });
+    } else if (req.user.role === 'ADMIN' || req.user.role === 'DATA_CONTROLLER') {
+      // ADMIN & DATA_CONTROLLER have central pool access
+      if (req.query.headQueue === 'true') {
+        // Leads in Staff Head hands awaiting Calling Staff distribution
+        conditions.push({
+          assignedStaffHead: { $ne: null },
+          assignedCallingStaff: null
+        });
+      } else if (req.query.unassignedIntake === 'true') {
+        // Raw intake pool awaiting Staff Head assignment
+        conditions.push({
+          assignedStaffHead: null
+        });
+      } else if (stage === 'UNASSIGNED') {
+        conditions.push({
+          $or: [
+            { currentStage: 'UNASSIGNED' },
+            { assignedStaffHead: null }
+          ]
+        });
+      } else if (stage && stage !== 'ALL') {
+        conditions.push({ currentStage: stage });
+      }
     } else if (req.user.role === 'INTERVIEW_PANEL') {
       if (stage && stage !== 'ALL') {
         conditions.push({ currentStage: stage });
@@ -1109,7 +1286,13 @@ exports.getLeads = async (req, res) => {
         ]
       });
     } else if (stage && stage !== 'ALL' && stage !== 'UNASSIGNED') {
-      conditions.push({ currentStage: stage });
+      if (!['STAFF_HEAD', 'ADMIN', 'DATA_CONTROLLER'].includes(req.user.role)) {
+        conditions.push({ currentStage: stage });
+      }
+    }
+
+    if (req.query.staffHead && req.query.staffHead !== 'ALL') {
+      conditions.push({ assignedStaffHead: req.query.staffHead });
     }
 
     if (closureStatus && closureStatus !== 'ALL') {
@@ -1194,7 +1377,18 @@ exports.getLeads = async (req, res) => {
     const inCallingCount = await Lead.countDocuments({ currentStage: 'CALLING_SCREENING' });
     const passportHoldersCount = await Lead.countDocuments({ isPassportHolder: 'YES' });
     const holdCount = await Lead.countDocuments({ isHold: true });
-    const unassignedCount = await Lead.countDocuments({ currentStage: 'UNASSIGNED' });
+    // Intake pool: leads in Data Controller / Admin hands awaiting Staff Head assignment
+    const unassignedCount = await Lead.countDocuments({
+      $or: [
+        { currentStage: 'UNASSIGNED' },
+        { assignedStaffHead: null }
+      ]
+    });
+    // Staff Head queue: leads transferred to Staff Head awaiting Calling Staff distribution
+    const staffHeadQueueCount = await Lead.countDocuments({
+      assignedStaffHead: { $ne: null },
+      assignedCallingStaff: null
+    });
     const cancelledCount = await Lead.countDocuments({
       $or: [
         { currentStage: 'CANCELLED' },
@@ -1219,6 +1413,7 @@ exports.getLeads = async (req, res) => {
         passportHolders: passportHoldersCount,
         onHold: holdCount,
         unassigned: unassignedCount,
+        staffHeadQueue: staffHeadQueueCount,
         cancelled: cancelledCount,
         unfit: unfitCount
       },
@@ -1451,7 +1646,15 @@ exports.distributeLeadsRoundRobin = async (req, res) => {
       lead.assignedCallingStaff = assignedStaff._id;
       if (req.user.role === 'STAFF_HEAD') {
         lead.assignedStaffHead = req.user._id;
+      } else if (!lead.assignedStaffHead && assignedStaff.teamHeadId) {
+        lead.assignedStaffHead = assignedStaff.teamHeadId;
       }
+      lead.activeHolder = {
+        user: assignedStaff._id,
+        name: assignedStaff.name,
+        role: 'CALLING_STAFF',
+        assignedAt: new Date()
+      };
       lead.currentStage = 'CALLING_SCREENING';
       await lead.save();
 
