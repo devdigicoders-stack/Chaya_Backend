@@ -17,9 +17,12 @@ const LeadSchema = new mongoose.Schema({
   passportNumber: { type: String, default: null },
   isPassportHolder: { 
     type: String, 
-    enum: ['YES', 'NO', 'NOT_CONFIRMED'], 
+    enum: ['YES', 'NO', 'NOT_CONFIRMED', 'NOT_INTERESTED'], 
     default: 'NOT_CONFIRMED' 
   },
+  isFormFilled: { type: Boolean, default: false },
+  formFilledAt: { type: Date, default: null },
+  applicationForm: { type: mongoose.Schema.Types.Mixed, default: null },
   
   // Current Workflow Stage
   currentStage: {

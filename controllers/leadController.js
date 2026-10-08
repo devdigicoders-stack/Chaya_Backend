@@ -301,9 +301,11 @@ exports.updateLead = async (req, res) => {
 
     if (applicationForm) {
       lead.applicationForm = {
-        ...lead.applicationForm,
+        ...(lead.applicationForm || {}),
         ...applicationForm
       };
+      lead.isFormFilled = true;
+      lead.formFilledAt = new Date();
       if (applicationForm.trade && !lead.trade) {
         lead.trade = applicationForm.trade;
       }
@@ -776,33 +778,48 @@ exports.assignLeadsToCallingStaff = async (req, res) => {
 // @access  Private
 exports.categorizeLead = async (req, res) => {
   try {
-    const { isPassportHolder, phone, passportNumber } = req.body;
-    const lead = await Lead.findById(req.params.id);
+    const { isPassportHolder, phone, passportNumber, remarks } = req.body;
+    let lead = null;
+    if (req.params.id.match(/^[0-9a-fA-F]{24}$/)) {
+      lead = await Lead.findById(req.params.id);
+    } else {
+      lead = await Lead.findOne({ leadId: req.params.id });
+    }
 
     if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
-    if (isPassportHolder === 'YES') {
-      if (!phone || !passportNumber) {
-        return res.status(400).json({
-          success: false,
-          message: 'Both Mobile Number and Passport Number are mandatory for Passport Holders!'
-        });
+    if (phone) lead.phone = phone;
+    if (passportNumber) lead.passportNumber = passportNumber;
+
+    if (isPassportHolder === 'NOT_INTERESTED') {
+      lead.isPassportHolder = 'NOT_INTERESTED';
+      lead.currentStage = 'CANCELLED';
+      lead.isHold = true;
+      lead.holdReason = remarks || 'Candidate not interested';
+    } else if (isPassportHolder) {
+      lead.isPassportHolder = isPassportHolder; // 'YES', 'NO', or 'NOT_CONFIRMED'
+      if (lead.currentStage === 'CANCELLED') {
+        lead.currentStage = 'CALLING_SCREENING';
+        lead.isHold = false;
+        lead.holdReason = '';
       }
-      lead.passportNumber = passportNumber;
-      lead.phone = phone;
     }
 
-    lead.isPassportHolder = isPassportHolder;
+    if (remarks && remarks.trim()) {
+      const timestamp = new Date().toLocaleDateString('en-GB');
+      lead.notes = lead.notes ? `${lead.notes}\n[${timestamp}]: ${remarks.trim()}` : `[${timestamp}]: ${remarks.trim()}`;
+    }
+
     await lead.save();
 
     await logLeadHistory({
       lead,
       performedBy: req.user,
       actionType: 'CATEGORIZED',
-      remarks: `Updated Passport Status to: ${isPassportHolder}, Passport No: ${passportNumber || 'N/A'}`
+      remarks: remarks || `Follow-up status marked: ${isPassportHolder}${passportNumber ? `, Passport No: ${passportNumber}` : ''}`
     });
 
-    res.json({ success: true, message: 'Lead categorized successfully', data: lead });
+    res.json({ success: true, message: 'Lead follow-up updated successfully', data: lead });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
