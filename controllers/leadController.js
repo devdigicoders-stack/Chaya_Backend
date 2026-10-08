@@ -674,7 +674,15 @@ exports.assignLeadsToCallingStaff = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid Calling Staff selected' });
     }
 
-    const leads = await Lead.find({ _id: { $in: leadIds } }).populate('assignedCallingStaff', 'name email');
+    const objectIds = leadIds.filter(id => id && id.toString().match(/^[0-9a-fA-F]{24}$/));
+    const stringIds = leadIds.filter(id => id && !id.toString().match(/^[0-9a-fA-F]{24}$/));
+    const orConditions = [];
+    if (objectIds.length > 0) orConditions.push({ _id: { $in: objectIds } });
+    if (stringIds.length > 0) orConditions.push({ leadId: { $in: stringIds } });
+
+    const leads = orConditions.length > 0 
+      ? await Lead.find({ $or: orConditions }).populate('assignedCallingStaff', 'name email')
+      : [];
     if (!leads.length) {
       return res.status(404).json({ success: false, message: 'No matching leads found' });
     }
@@ -1634,7 +1642,13 @@ exports.distributeLeadsRoundRobin = async (req, res) => {
       return res.status(400).json({ success: false, message: 'No valid Calling Staff members found for distribution' });
     }
 
-    const leads = await Lead.find({ _id: { $in: leadIds } });
+    const objectIds = leadIds.filter(id => id && id.toString().match(/^[0-9a-fA-F]{24}$/));
+    const stringIds = leadIds.filter(id => id && !id.toString().match(/^[0-9a-fA-F]{24}$/));
+    const orConditions = [];
+    if (objectIds.length > 0) orConditions.push({ _id: { $in: objectIds } });
+    if (stringIds.length > 0) orConditions.push({ leadId: { $in: stringIds } });
+
+    const leads = orConditions.length > 0 ? await Lead.find({ $or: orConditions }) : [];
     const distributionResult = {};
     staffMembers.forEach(s => { distributionResult[s._id.toString()] = { staff: s, count: 0 }; });
 
@@ -2042,7 +2056,12 @@ exports.saveMedicalTests = async (req, res) => {
 exports.submitMedicalResult = async (req, res) => {
   try {
     const { status, center, slipNo, validity, reportUrl, remarks } = req.body;
-    const lead = await Lead.findById(req.params.id);
+    let lead = null;
+    if (req.params.id.match(/^[0-9a-fA-F]{24}$/)) {
+      lead = await Lead.findById(req.params.id);
+    } else {
+      lead = await Lead.findOne({ leadId: req.params.id });
+    }
 
     if (!lead) {
       return res.status(404).json({ success: false, message: 'Candidate lead not found' });
