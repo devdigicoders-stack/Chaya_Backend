@@ -907,6 +907,21 @@ exports.transferLeadStage = async (req, res) => {
       lead.selectionMode = selectionMode;
     }
 
+    if (normalizedToStage === 'INITIAL_INTERVIEW') {
+      if (!lead.selectionMode || lead.selectionMode === 'NONE') lead.selectionMode = 'INTERVIEW';
+      if (!lead.initialInterview) lead.initialInterview = {};
+      lead.initialInterview.status = 'PENDING';
+      if (remarks) lead.initialInterview.remarks = remarks;
+      lead.initialInterview.updatedAt = new Date();
+    } else if (normalizedToStage === 'MEDICAL_PROCESS') {
+      if (!lead.selectionMode || lead.selectionMode === 'NONE') lead.selectionMode = 'DIRECT_CV';
+      if (!lead.medicalDetails) lead.medicalDetails = {};
+      if (!lead.medicalDetails.status || lead.medicalDetails.status === 'PENDING') {
+        lead.medicalDetails.status = 'PENDING';
+      }
+      lead.medicalDetails.updatedAt = new Date();
+    }
+
     if (fileType) {
       lead.fileType = fileType;
     } else if (normalizedToStage === 'PRE_VISA' && (!lead.fileType || lead.fileType === 'NOT_SET')) {
