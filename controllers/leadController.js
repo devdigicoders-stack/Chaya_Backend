@@ -835,7 +835,13 @@ exports.categorizeLead = async (req, res) => {
 exports.transferLeadStage = async (req, res) => {
   try {
     const { fromStage, toStage, completedChecklist, selectionMode, remarks, fileType } = req.body;
-    const lead = await Lead.findById(req.params.id);
+    let lead = null;
+    if (mongoose.Types.ObjectId.isValid(req.params.id)) {
+      lead = await Lead.findById(req.params.id);
+    }
+    if (!lead) {
+      lead = await Lead.findOne({ leadId: req.params.id });
+    }
 
     if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
@@ -905,6 +911,13 @@ exports.transferLeadStage = async (req, res) => {
       lead.fileType = fileType;
     } else if (normalizedToStage === 'PRE_VISA' && (!lead.fileType || lead.fileType === 'NOT_SET')) {
       lead.fileType = 'DIRECT_FILE'; // Transferred directly to Pre-Viva stage (FRD Section 14)
+    }
+
+    if (req.body.trade || req.body.position) {
+      lead.trade = req.body.trade || req.body.position;
+    }
+    if (req.body.preferredCountry || req.body.country) {
+      lead.preferredCountry = req.body.preferredCountry || req.body.country;
     }
 
     await lead.save();
@@ -1194,11 +1207,16 @@ exports.getLeads = async (req, res) => {
       }
     } else if (req.user.role === 'MEDICAL_DEPT') {
       conditions.push({
-        $or: [
-          { currentStage: 'MEDICAL_PROCESS' },
-          { 'medicalDetails.status': { $in: ['SCHEDULED', 'FIT', 'UNFIT'] } },
-          { selectionMode: 'DIRECT_CV' },
-          { 'initialInterview.status': 'PASS' }
+        $and: [
+          { currentStage: { $nin: ['UNASSIGNED', 'CALLING_SCREENING', 'STAFF_HEAD_HANDLING', 'STAFF_HEAD_VERIFICATION', 'INITIAL_INTERVIEW', 'CANCELLED', 'REJECTED'] } },
+          {
+            $or: [
+              { currentStage: 'MEDICAL_PROCESS' },
+              { 'medicalDetails.status': { $in: ['SCHEDULED', 'FIT', 'UNFIT'] } },
+              { selectionMode: 'DIRECT_CV' },
+              { 'initialInterview.status': 'PASS' }
+            ]
+          }
         ]
       });
     } else if (req.user.role === 'ACCOUNTS') {
@@ -1279,11 +1297,16 @@ exports.getLeads = async (req, res) => {
       });
     } else if (medicalDesk === 'true') {
       conditions.push({
-        $or: [
-          { currentStage: 'MEDICAL_PROCESS' },
-          { 'medicalDetails.status': { $in: ['SCHEDULED', 'FIT', 'UNFIT'] } },
-          { selectionMode: 'DIRECT_CV' },
-          { 'initialInterview.status': 'PASS' }
+        $and: [
+          { currentStage: { $nin: ['UNASSIGNED', 'CALLING_SCREENING', 'STAFF_HEAD_HANDLING', 'STAFF_HEAD_VERIFICATION', 'INITIAL_INTERVIEW', 'CANCELLED', 'REJECTED'] } },
+          {
+            $or: [
+              { currentStage: 'MEDICAL_PROCESS' },
+              { 'medicalDetails.status': { $in: ['SCHEDULED', 'FIT', 'UNFIT'] } },
+              { selectionMode: 'DIRECT_CV' },
+              { 'initialInterview.status': 'PASS' }
+            ]
+          }
         ]
       });
     } else if (cancelledDesk === 'true') {
