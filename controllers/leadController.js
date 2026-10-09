@@ -105,6 +105,8 @@ exports.createLeads = async (req, res) => {
         assignedStaffHead,
         assignedCallingStaff,
         currentStage,
+        isFormFilled: item.isFormFilled === true || !!(item.applicationForm && (item.applicationForm.fatherName || item.applicationForm.dob || item.applicationForm.hasPhoto)),
+        formFilledAt: (item.isFormFilled === true || (item.applicationForm && (item.applicationForm.fatherName || item.applicationForm.dob))) ? new Date() : null,
         applicationForm: {
           trade: item.trade || item.applicationForm?.trade || '',
           experienceYears: item.experienceYears || item.applicationForm?.experienceYears || '',
@@ -277,7 +279,7 @@ exports.updateLead = async (req, res) => {
     // Editable basic fields & workflow stage
     const {
       candidateName, phone, email, city, state, trade, notes,
-      passportNumber, isPassportHolder, applicationForm,
+      passportNumber, isPassportHolder, applicationForm, isFormFilled,
       currentStage, selectionMode, initialInterview,
       photoUrl, signatureUrl, documents
     } = req.body;
@@ -291,6 +293,10 @@ exports.updateLead = async (req, res) => {
     if (notes !== undefined) lead.notes = notes;
     if (passportNumber !== undefined) lead.passportNumber = passportNumber;
     if (isPassportHolder !== undefined) lead.isPassportHolder = isPassportHolder;
+    if (isFormFilled !== undefined) {
+      lead.isFormFilled = isFormFilled;
+      if (isFormFilled && !lead.formFilledAt) lead.formFilledAt = new Date();
+    }
     if (currentStage !== undefined) lead.currentStage = currentStage;
     if (selectionMode !== undefined) lead.selectionMode = selectionMode;
     if (photoUrl) lead.photoUrl = photoUrl;
