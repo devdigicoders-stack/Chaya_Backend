@@ -48,6 +48,7 @@ const {
   updateCompanyConfirmation,
   addBillBookTransaction,
   verifyBillBookTransaction,
+  rejectBillBookTransaction,
   addBillBookCharge,
   saveConfirmation,
   closeLeadFile,
@@ -128,6 +129,7 @@ router.put('/:id/company-confirmation', protect, updateCompanyConfirmation);
 // 10. Bill Book & Financial Ledger (FRD Section 9)
 router.post('/:id/billbook/transaction', protect, addBillBookTransaction);
 router.put('/:id/billbook/transaction/:receiptNo/verify', protect, authorize('ACCOUNTS', 'ADMIN'), verifyBillBookTransaction);
+router.put('/:id/billbook/transaction/:receiptNo/reject', protect, authorize('ACCOUNTS', 'ADMIN'), rejectBillBookTransaction);
 router.post('/:id/billbook/charge', protect, addBillBookCharge);
 
 // 11. 8 Mandatory Confirmations & Audio/Video Recordings (FRD Section 8)

@@ -3648,6 +3648,52 @@ exports.updateCompanyConfirmation = async (req, res) => {
 };
 
 // ─── 3. BILL BOOK & FINANCIAL LEDGER (FRD Section 9) ──────────────────────────
+
+// Helper to recalculate Bill Book totals strictly reflecting VERIFIED payments
+const recalculateBillBookTotals = (lead) => {
+  if (!lead.billBook) lead.billBook = {};
+  const txs = lead.billBook.transactions || [];
+  
+  // Only VERIFIED payments count towards received money in ledger
+  const verifiedPayments = txs
+    .filter(t => t.status === 'VERIFIED' && t.type !== 'REFUND')
+    .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+
+  // Payments entered by staff waiting for Admin verification
+  const pendingPayments = txs
+    .filter(t => (t.status === 'PENDING_VERIFICATION' || t.status === 'PENDING' || !t.status) && t.type !== 'REFUND')
+    .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+
+  // Verified refunds
+  const verifiedRefunds = txs
+    .filter(t => t.type === 'REFUND' && t.status === 'VERIFIED')
+    .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+
+  // Total payable approved
+  let totalApproved = lead.billBook.approvedPayable;
+  if (!totalApproved || totalApproved <= 0) {
+    const charges = lead.billBook.charges || [];
+    totalApproved = charges.reduce((s, c) => s + (Number(c.amount) || 0), 0);
+    if (!totalApproved || totalApproved <= 0) totalApproved = 12000;
+  }
+  lead.billBook.approvedPayable = totalApproved;
+  lead.billBook.totalReceived = verifiedPayments;
+  lead.billBook.pendingVerification = pendingPayments;
+  lead.billBook.balanceDue = Math.max(0, totalApproved - verifiedPayments);
+
+  if (!lead.paymentDetails) lead.paymentDetails = {};
+  lead.paymentDetails.totalPaid = verifiedPayments;
+  lead.paymentDetails.balanceDue = Math.max(0, (lead.paymentDetails.totalFee || totalApproved) - verifiedPayments);
+
+  const verifiedAdvance = txs
+    .filter(t => t.head === 'ADVANCE' && t.status === 'VERIFIED' && t.type !== 'REFUND')
+    .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+  lead.paymentDetails.advancePaid = verifiedAdvance;
+
+  lead.billBook.refundPaid = verifiedRefunds;
+  lead.billBook.refundBalance = Math.max(0, (lead.billBook.approvedRefund || 0) - verifiedRefunds);
+};
+
 // @desc    Add transaction to Bill Book (Payment or Refund)
 // @route   POST /api/leads/:id/billbook/transaction
 // @access  Private
@@ -3698,6 +3744,7 @@ exports.addBillBookTransaction = async (req, res) => {
       }
     }
 
+    // ALL transactions entered by staff remain PENDING_VERIFICATION until Admin/Accounts verifies
     const newTx = {
       receiptNo,
       type: type || 'PAYMENT',
@@ -3705,11 +3752,11 @@ exports.addBillBookTransaction = async (req, res) => {
       amount: numAmount,
       paymentMode: paymentMode || 'UPI',
       referenceNo: referenceNo || '',
-      status: req.user.role === 'ACCOUNTS' || req.user.role === 'ADMIN' ? 'VERIFIED' : 'PENDING_VERIFICATION',
+      status: 'PENDING_VERIFICATION',
       receiptUrl: receiptUrl || '',
       receivedBy: req.user.name,
-      verifiedBy: (req.user.role === 'ACCOUNTS' || req.user.role === 'ADMIN') ? req.user.name : '',
-      verifiedAt: (req.user.role === 'ACCOUNTS' || req.user.role === 'ADMIN') ? new Date() : null,
+      verifiedBy: '',
+      verifiedAt: null,
       remarks: remarks || '',
       afterAdvanceConfirmed: Boolean(req.body.afterAdvanceConfirmed),
       recordingConfirmed: Boolean(req.body.recordingConfirmed),
@@ -3719,24 +3766,8 @@ exports.addBillBookTransaction = async (req, res) => {
 
     lead.billBook.transactions.push(newTx);
 
-    // Update totals
-    if (!isRefund) {
-      lead.billBook.totalReceived = (lead.billBook.totalReceived || 0) + numAmount;
-      lead.billBook.balanceDue = Math.max(0, (lead.billBook.approvedPayable || 0) - lead.billBook.totalReceived);
-      lead.paymentDetails.totalPaid = (lead.paymentDetails.totalPaid || 0) + numAmount;
-      lead.paymentDetails.balanceDue = Math.max(0, (lead.paymentDetails.totalFee || 0) - lead.paymentDetails.totalPaid);
-      if (head === 'ADVANCE') {
-        lead.paymentDetails.advancePaid = (lead.paymentDetails.advancePaid || 0) + numAmount;
-      }
-    } else {
-      lead.billBook.refundPaid = (lead.billBook.refundPaid || 0) + numAmount;
-      lead.billBook.refundBalance = Math.max(0, (lead.billBook.approvedRefund || 0) - lead.billBook.refundPaid);
-      if (lead.billBook.refundBalance === 0 && (lead.billBook.approvedRefund || 0) > 0) {
-        lead.closureStatus = 'FINAL_CLOSED';
-      } else {
-        lead.closureStatus = 'REFUND_PENDING';
-      }
-    }
+    // Recalculate totals strictly reflecting verified funds
+    recalculateBillBookTotals(lead);
 
     await lead.save();
 
@@ -3744,16 +3775,16 @@ exports.addBillBookTransaction = async (req, res) => {
       lead,
       performedBy: req.user,
       actionType: isRefund ? 'REFUND_RECORDED' : 'PAYMENT_RECORDED',
-      remarks: `${type || 'PAYMENT'} of ₹${numAmount} logged in Bill Book (${newTx.head}, Receipt: ${receiptNo}). Balance Due: ₹${lead.billBook.balanceDue}`
+      remarks: `${type || 'PAYMENT'} of ₹${numAmount} logged in Bill Book (${newTx.head}, Receipt: ${receiptNo}, Mode: ${newTx.paymentMode}, Ref: ${referenceNo || 'N/A'}). Status: PENDING ADMIN VERIFICATION. (Pending: ₹${lead.billBook.pendingVerification}, Verified: ₹${lead.billBook.totalReceived})`
     });
 
-    res.json({ success: true, message: `${type || 'Payment'} of ₹${numAmount} saved`, data: lead.billBook });
+    res.json({ success: true, message: `${type || 'Payment'} of ₹${numAmount} saved (Pending Admin Verification)`, data: lead.billBook });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
 };
 
-// @desc    Verify Bill Book transaction by Accounts (FRD Section 9)
+// @desc    Verify Bill Book transaction by Accounts / Admin (FRD Section 9)
 // @route   PUT /api/leads/:id/billbook/transaction/:receiptNo/verify
 // @access  Private (ACCOUNTS, ADMIN)
 exports.verifyBillBookTransaction = async (req, res) => {
@@ -3764,9 +3795,16 @@ exports.verifyBillBookTransaction = async (req, res) => {
     const tx = lead.billBook?.transactions?.find(t => t.receiptNo === req.params.receiptNo);
     if (!tx) return res.status(404).json({ success: false, message: 'Transaction not found' });
 
+    if (tx.status === 'VERIFIED') {
+      return res.status(400).json({ success: false, message: 'Transaction is already verified' });
+    }
+
     tx.status = 'VERIFIED';
     tx.verifiedBy = req.user.name;
     tx.verifiedAt = new Date();
+
+    // Recalculate totals now that this transaction is verified
+    recalculateBillBookTotals(lead);
 
     await lead.save();
 
@@ -3774,10 +3812,45 @@ exports.verifyBillBookTransaction = async (req, res) => {
       lead,
       performedBy: req.user,
       actionType: 'PAYMENT_VERIFIED',
-      remarks: `Receipt #${tx.receiptNo} of ₹${tx.amount} verified by Accounts (${req.user.name})`
+      remarks: `Receipt #${tx.receiptNo} of ₹${tx.amount} (${tx.head}) VERIFIED & CLEARED by Admin (${req.user.name}). Updated Verified Received: ₹${lead.billBook.totalReceived}, Remaining Balance Due: ₹${lead.billBook.balanceDue}`
     });
 
-    res.json({ success: true, message: `Receipt ${tx.receiptNo} verified`, data: lead.billBook });
+    res.json({ success: true, message: `Receipt ${tx.receiptNo} verified and added to verified ledger`, data: lead.billBook });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Reject Bill Book transaction by Accounts / Admin
+// @route   PUT /api/leads/:id/billbook/transaction/:receiptNo/reject
+// @access  Private (ACCOUNTS, ADMIN)
+exports.rejectBillBookTransaction = async (req, res) => {
+  try {
+    const { reason } = req.body;
+    const lead = await Lead.findById(req.params.id);
+    if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
+
+    const tx = lead.billBook?.transactions?.find(t => t.receiptNo === req.params.receiptNo);
+    if (!tx) return res.status(404).json({ success: false, message: 'Transaction not found' });
+
+    tx.status = 'REJECTED';
+    tx.rejectedBy = req.user.name;
+    tx.rejectedAt = new Date();
+    tx.rejectionReason = reason || 'Payment not credited or receipt invalid';
+
+    // Recalculate totals
+    recalculateBillBookTotals(lead);
+
+    await lead.save();
+
+    await logLeadHistory({
+      lead,
+      performedBy: req.user,
+      actionType: 'PAYMENT_REJECTED',
+      remarks: `Receipt #${tx.receiptNo} of ₹${tx.amount} (${tx.head}) REJECTED by Admin (${req.user.name}). Reason: ${tx.rejectionReason}`
+    });
+
+    res.json({ success: true, message: `Receipt ${tx.receiptNo} rejected`, data: lead.billBook });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
