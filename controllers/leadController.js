@@ -926,6 +926,33 @@ exports.transferLeadStage = async (req, res) => {
         lead.medicalDetails.status = 'PENDING';
       }
       lead.medicalDetails.updatedAt = new Date();
+
+      // Step 5 of changes.PDF: MEDICAL TRANSFER -> BILL BOOK SHURU
+      if (!lead.billBook) lead.billBook = {};
+      lead.billBook.isLedgerOpen = true;
+      lead.billBook.openedAt = lead.billBook.openedAt || new Date();
+      if (!lead.billBook.charges || lead.billBook.charges.length === 0) {
+        lead.billBook.charges = [
+          { head: 'MEDICAL', amount: 2500, description: 'Medical Examination & GAMCA Fee', addedAt: new Date() },
+          { head: 'SERVICE', amount: 9500, description: 'Processing & Visa Service Fee', addedAt: new Date() }
+        ];
+        lead.billBook.approvedPayable = 12000;
+        lead.billBook.balanceDue = 12000;
+      }
+
+      // Link to Staff Head Medical Desk
+      if (!lead.assignedStaffHead) {
+        if (req.user?.role === 'STAFF_HEAD') {
+          lead.assignedStaffHead = req.user._id;
+        } else if (req.user?.teamHeadId) {
+          lead.assignedStaffHead = req.user.teamHeadId;
+        }
+      }
+      lead.activeHolder = {
+        role: 'STAFF_HEAD',
+        name: 'Staff Head Desk (Medical)',
+        assignedAt: new Date()
+      };
     }
 
     if (fileType) {
@@ -1169,12 +1196,14 @@ exports.getLeads = async (req, res) => {
       const callingStaffUnderHead = await User.find({ teamHeadId: req.user._id }).select('_id');
       let staffIds = callingStaffUnderHead.map(u => u._id);
 
-      // Staff Head lead scope: Only leads assigned to this Staff Head or their calling staff!
-      // They NEVER see raw unassigned intake leads (where assignedStaffHead is null).
+      // Staff Head lead scope: Only leads assigned to this Staff Head or their calling staff,
+      // plus leads in Medical stage awaiting Staff Head clearance!
       conditions.push({
         $or: [
           { assignedStaffHead: req.user._id },
-          ...(staffIds.length > 0 ? [{ assignedCallingStaff: { $in: staffIds } }] : [])
+          ...(staffIds.length > 0 ? [{ assignedCallingStaff: { $in: staffIds } }] : []),
+          { currentStage: 'MEDICAL_PROCESS' },
+          { 'medicalDetails.status': { $in: ['PENDING', 'SCHEDULED', 'FIT', 'UNFIT'] } }
         ]
       });
 
@@ -1924,9 +1953,33 @@ exports.submitInterviewResult = async (req, res) => {
       lead.initialInterview.updatedAt = new Date();
 
       if (status === 'PASS') {
-        // FRD Section 10: "Only PASS candidates proceed to Medical from the interview route."
+        // FRD Section 10 & Step 4-5 of changes.PDF: PASS candidates proceed to Medical stage and start Bill Book
         lead.currentStage = 'MEDICAL_PROCESS';
         lead.selectionMode = lead.selectionMode || 'INTERVIEW';
+        if (!lead.medicalDetails) lead.medicalDetails = {};
+        if (!lead.medicalDetails.status || lead.medicalDetails.status === 'PENDING') {
+          lead.medicalDetails.status = 'PENDING';
+        }
+        lead.medicalDetails.updatedAt = new Date();
+
+        // Step 5 of changes.PDF: Medical transfer -> Bill Book shuru
+        if (!lead.billBook) lead.billBook = {};
+        lead.billBook.isLedgerOpen = true;
+        lead.billBook.openedAt = lead.billBook.openedAt || new Date();
+        if (!lead.billBook.charges || lead.billBook.charges.length === 0) {
+          lead.billBook.charges = [
+            { head: 'MEDICAL', amount: 2500, description: 'Medical Examination & GAMCA Fee', addedAt: new Date() },
+            { head: 'SERVICE', amount: 9500, description: 'Processing & Visa Service Fee', addedAt: new Date() }
+          ];
+          lead.billBook.approvedPayable = 12000;
+          lead.billBook.balanceDue = 12000;
+        }
+
+        lead.activeHolder = {
+          role: 'STAFF_HEAD',
+          name: 'Staff Head Desk (Medical)',
+          assignedAt: new Date()
+        };
       } else if (status === 'FAIL') {
         // FAIL candidates return to Data Controller pool with Interview Failed status per business workflow
         lead.currentStage = 'REJECTED';
@@ -2320,6 +2373,52 @@ exports.recordPaymentBooking = async (req, res) => {
     } else {
       lead.paymentDetails.paymentStatus = 'UNPAID';
     }
+
+    // Sync with Bill Book & Financial Ledger
+    if (!lead.billBook) lead.billBook = {};
+    lead.billBook.isLedgerOpen = true;
+    lead.billBook.openedAt = lead.billBook.openedAt || new Date();
+    if (!lead.billBook.transactions) lead.billBook.transactions = [];
+
+    if (mPaid > 0) {
+      lead.billBook.transactions.push({
+        receiptNo: `BB-REC-${Math.floor(100000 + Math.random() * 900000)}`,
+        type: 'PAYMENT',
+        head: 'MEDICAL',
+        amount: mPaid,
+        paymentMode: lead.paymentDetails.paymentMode,
+        referenceNo: receiptNo || '',
+        status: 'VERIFIED',
+        receivedBy: req.user.name,
+        verifiedBy: req.user.name,
+        verifiedAt: new Date(),
+        remarks: remarks || 'Medical Fee payment',
+        date: new Date()
+      });
+    }
+
+    if (sPaid > 0) {
+      lead.billBook.transactions.push({
+        receiptNo: `BB-REC-${Math.floor(100000 + Math.random() * 900000)}`,
+        type: 'ADVANCE',
+        head: 'ADVANCE',
+        amount: sPaid,
+        paymentMode: lead.paymentDetails.paymentMode,
+        referenceNo: receiptNo || '',
+        status: 'VERIFIED',
+        receivedBy: req.user.name,
+        verifiedBy: req.user.name,
+        verifiedAt: new Date(),
+        remarks: remarks || 'Advance collection payment',
+        afterAdvanceConfirmed: true,
+        recordingConfirmed: true,
+        recordingUrl: recordingUrl || '',
+        date: new Date()
+      });
+    }
+
+    lead.billBook.totalReceived = (lead.billBook.totalReceived || 0) + totalCollected;
+    lead.billBook.balanceDue = Math.max(0, (lead.billBook.approvedPayable || 12000) - lead.billBook.totalReceived);
 
     await lead.save();
 
