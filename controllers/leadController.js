@@ -1878,9 +1878,16 @@ exports.submitInterviewResult = async (req, res) => {
       if (status === 'PASS') {
         // FRD Section 10: "Only PASS candidates proceed to Medical from the interview route."
         lead.currentStage = 'MEDICAL_PROCESS';
+        lead.selectionMode = lead.selectionMode || 'INTERVIEW';
       } else if (status === 'FAIL') {
-        // FAIL candidates remain closed/rejected or in a follow-up status
+        // FAIL candidates return to Data Controller pool with Interview Failed status per business workflow
         lead.currentStage = 'REJECTED';
+        lead.assignedCallingStaff = null;
+        lead.activeHolder = {
+          role: 'DATA_CONTROLLER',
+          name: 'Data Controller Pool',
+          assignedAt: new Date()
+        };
       } else if (status === 'ON_HOLD') {
         lead.currentStage = 'INITIAL_INTERVIEW';
       }
