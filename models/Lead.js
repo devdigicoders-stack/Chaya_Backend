@@ -439,8 +439,28 @@ const LeadSchema = new mongoose.Schema({
     passportIssueDate: { type: String, default: '' },
     passportExpiry: { type: String, default: '' },
     hasPreviousGCC: { type: String, default: 'No' },
-    previousCountry: { type: String, default: '' }
+    previousCountry: { type: String, default: '' },
+    photoUrl: { type: String, default: '' },
+    signatureUrl: { type: String, default: '' },
+    hasPhoto: { type: Boolean, default: false },
+    hasSignature: { type: Boolean, default: false }
   },
+
+  photoUrl: { type: String, default: '' },
+  signatureUrl: { type: String, default: '' },
+  documents: [
+    {
+      name: { type: String },
+      title: { type: String },
+      fileName: { type: String },
+      fileUrl: { type: String },
+      fileSize: { type: String },
+      category: { type: String, default: 'Other' },
+      status: { type: String, default: 'VERIFIED' },
+      uploadedAt: { type: Date, default: Date.now },
+      uploadedBy: { type: String, default: 'Staff' }
+    }
+  ],
 
   isHold: { type: Boolean, default: false },
   holdReason: { type: String, default: '' },

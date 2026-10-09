@@ -278,7 +278,8 @@ exports.updateLead = async (req, res) => {
     const {
       candidateName, phone, email, city, state, trade, notes,
       passportNumber, isPassportHolder, applicationForm,
-      currentStage, selectionMode, initialInterview
+      currentStage, selectionMode, initialInterview,
+      photoUrl, signatureUrl, documents
     } = req.body;
 
     if (candidateName) lead.candidateName = candidateName;
@@ -292,6 +293,9 @@ exports.updateLead = async (req, res) => {
     if (isPassportHolder !== undefined) lead.isPassportHolder = isPassportHolder;
     if (currentStage !== undefined) lead.currentStage = currentStage;
     if (selectionMode !== undefined) lead.selectionMode = selectionMode;
+    if (photoUrl) lead.photoUrl = photoUrl;
+    if (signatureUrl) lead.signatureUrl = signatureUrl;
+    if (documents) lead.documents = documents;
     if (initialInterview !== undefined) {
       lead.initialInterview = {
         ...lead.initialInterview,
@@ -2460,7 +2464,25 @@ exports.uploadLeadDocument = async (req, res) => {
         d => (d.name || d.title) !== (docTitle || req.file.originalname)
       );
       lead.preVivaDetails.documents.push(docItem);
+
+      lead.documents = lead.documents || [];
+      lead.documents = lead.documents.filter(
+        d => (d.name || d.title) !== (docTitle || req.file.originalname)
+      );
+      lead.documents.push(docItem);
+
+      if (category === 'Photo' || (docTitle && docTitle.toLowerCase().includes('photo'))) {
+        lead.photoUrl = filePath;
+        if (lead.applicationForm) lead.applicationForm.photoUrl = filePath;
+      }
+      if (category === 'Signature' || (docTitle && docTitle.toLowerCase().includes('signature'))) {
+        lead.signatureUrl = filePath;
+        if (lead.applicationForm) lead.applicationForm.signatureUrl = filePath;
+      }
+
       lead.markModified('preVivaDetails');
+      lead.markModified('documents');
+      lead.markModified('applicationForm');
       await lead.save();
 
       await logLeadHistory({
