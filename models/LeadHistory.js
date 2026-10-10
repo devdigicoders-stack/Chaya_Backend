@@ -51,6 +51,8 @@ const LeadHistorySchema = new mongoose.Schema({
       'FILE_CLOSED',
       'REFUND_DISBURSED',
       'CONFIRMATION_UPDATED',
+      'MEDICAL_CONFIRMATION_COMPLETED',
+      'CLOSED_NO_ADVANCE',
       'REAPPLIED_NEW_CYCLE',
       'CANDIDATE_CANCELLED',
       'CANDIDATE_PLACED_ON_HOLD'

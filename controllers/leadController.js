@@ -997,16 +997,92 @@ exports.updateLocationConfirmation = async (req, res) => {
       isConfirmed, 
       isCancelled, 
       cancellationReason,
+      isNoAdvance,
+      outcome,
       medicalPdfShared,
       medicalConditionsExplained,
       recordingConfirmed,
-      recordingUrl
+      recordingUrl,
+      remarks
     } = req.body;
     const lead = await Lead.findById(req.params.id);
 
     if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
-    // Handle cancellation by candidate (FRD Section 13 & Line 128)
+    const cleanRecording = (recordingUrl || lead.locationConfirmation?.recordingUrl || '').trim();
+
+    // ─── 1. Handle "Closed / No Advance" (User SOP & FRD Line 128) ─────────────
+    // "yadi client aage advance nahi deta hai ,, to usaki file calling staff ke pass closed / no advance status me rahegi our es sthiti me bhi medical confirmation recording aniwarya hogi"
+    if (outcome === 'CLOSED_NO_ADVANCE' || isNoAdvance) {
+      if (!cleanRecording) {
+        return res.status(400).json({
+          success: false,
+          message: 'Medical Confirmation Call Recording is MANDATORY before closing file as Closed / No Advance!'
+        });
+      }
+
+      lead.closureStatus = 'CLOSED_NO_ADVANCE';
+      lead.isHold = true;
+      lead.holdReason = remarks || cancellationReason || 'Client declined advance payment after medical examination. File retained under Calling Staff as Closed / No Advance.';
+      lead.closureDetails = {
+        closedAt: new Date(),
+        reason: lead.holdReason,
+        closedBy: req.user._id,
+        recordingUrl: cleanRecording,
+        refundPayable: 0,
+        refundPaid: 0,
+        refundBalance: 0
+      };
+
+      if (medicalPdfShared !== undefined) lead.locationConfirmation.medicalPdfShared = Boolean(medicalPdfShared);
+      if (medicalConditionsExplained !== undefined) lead.locationConfirmation.medicalConditionsExplained = Boolean(medicalConditionsExplained);
+      lead.locationConfirmation.recordingConfirmed = true;
+      lead.locationConfirmation.recordingUrl = cleanRecording;
+      lead.locationConfirmation.confirmedAt = new Date();
+
+      // Synchronize with 8 Mandatory Confirmations (DocType: MEDICAL_FITNESS_DECLARATION)
+      if (!lead.confirmations) lead.confirmations = [];
+      let medConf = lead.confirmations.find(c => c.docType === 'MEDICAL_FITNESS_DECLARATION' || c.docType === 'MEDICAL_CONFIRMATION');
+      if (medConf) {
+        medConf.status = 'CLIENT_CONFIRMED';
+        medConf.sharedChannel = 'WHATSAPP';
+        medConf.confirmedAt = new Date();
+        medConf.recordingUrl = cleanRecording;
+        medConf.recordingType = 'CALL_RECORDING';
+        medConf.remarks = 'Medical conditions explained; call recording attached. File closed as CLOSED / NO ADVANCE.';
+      } else {
+        lead.confirmations.push({
+          docType: 'MEDICAL_FITNESS_DECLARATION',
+          title: '3. Medical Fitness Declaration',
+          status: 'CLIENT_CONFIRMED',
+          sharedChannel: 'WHATSAPP',
+          confirmedAt: new Date(),
+          recordingUrl: cleanRecording,
+          recordingType: 'CALL_RECORDING',
+          remarks: 'Medical conditions explained; call recording attached. File closed as CLOSED / NO ADVANCE.'
+        });
+      }
+
+      await lead.save();
+
+      await logLeadHistory({
+        lead,
+        performedBy: req.user,
+        actionType: 'CLOSED_NO_ADVANCE',
+        fromStage: lead.currentStage,
+        toStage: lead.currentStage,
+        remarks: `Candidate file closed as CLOSED / NO ADVANCE by Calling Staff. Medical confirmation call recording attached: ${cleanRecording}. File retained under Calling Staff.`
+      });
+
+      return res.json({
+        success: true,
+        actionTaken: 'CLOSED_NO_ADVANCE',
+        message: 'Candidate file closed as "Closed / No Advance" with mandatory medical confirmation recording. Retained under Calling Staff.',
+        data: lead
+      });
+    }
+
+    // ─── 2. Handle Cancellation by Candidate ───────────────────────────────────
     if (isCancelled) {
       const prevStage = lead.currentStage;
       const totalReceived = getLeadTotalPaymentReceived(lead);
@@ -1059,9 +1135,16 @@ exports.updateLocationConfirmation = async (req, res) => {
         });
       } else {
         // FRD Line 128: No Advance file closure preserves Medical Confirmation PDF and Recording
+        if (!cleanRecording) {
+          return res.status(400).json({
+            success: false,
+            message: 'Medical Confirmation Call Recording is MANDATORY before closing file as Closed / No Advance!'
+          });
+        }
+
         if (medicalPdfShared !== undefined) lead.locationConfirmation.medicalPdfShared = Boolean(medicalPdfShared);
-        if (recordingConfirmed !== undefined) lead.locationConfirmation.recordingConfirmed = Boolean(recordingConfirmed);
-        if (recordingUrl !== undefined) lead.locationConfirmation.recordingUrl = recordingUrl;
+        lead.locationConfirmation.recordingConfirmed = true;
+        lead.locationConfirmation.recordingUrl = cleanRecording;
 
         lead.isHold = true;
         lead.holdReason = cancellationReason || 'Candidate requested cancellation during location confirmation, but no payment received. Placed on HOLD.';
@@ -1071,23 +1154,23 @@ exports.updateLocationConfirmation = async (req, res) => {
         await logLeadHistory({
           lead,
           performedBy: req.user,
-          actionType: 'CANDIDATE_PLACED_ON_HOLD',
+          actionType: 'CLOSED_NO_ADVANCE',
           fromStage: prevStage,
           toStage: prevStage,
-          remarks: `Candidate attempted cancellation with ₹0 payment. Preserved Medical PDF & Recording records. Placed on CLOSED_NO_ADVANCE / HOLD per FRD Line 128.`
+          remarks: `Candidate attempted cancellation with ₹0 payment. Preserved Medical PDF & Recording records (${cleanRecording}). Placed on CLOSED_NO_ADVANCE / HOLD per FRD Line 128.`
         });
 
         return res.json({
           success: true,
           actionTaken: 'ON_HOLD',
           totalReceived: 0,
-          message: 'Candidate has ₹0 payment (Service Fee / Medical Fee not received). As per company policy, candidate cannot be cancelled and has been placed on HOLD (Closed / No Advance).',
+          message: 'Candidate has ₹0 payment. Retained under Calling Staff as Closed / No Advance with mandatory recording.',
           data: lead
         });
       }
     }
 
-    if (lead.locationConfirmation.editCount >= 4 && !isConfirmed) {
+    if (lead.locationConfirmation.editCount >= 4 && !isConfirmed && outcome !== 'PROCEED_ADVANCE') {
       lead.currentStage = 'CANCELLED';
       await lead.save();
 
@@ -1109,25 +1192,32 @@ exports.updateLocationConfirmation = async (req, res) => {
       lead.locationConfirmation.confirmedLocation = confirmedLocation;
     }
 
-    if (isConfirmed) {
-      // FRD Section 4 Step 7 & Line 230: Medical confirmation PDF, conditions accepted & recording are mandatory
-      if (medicalPdfShared !== undefined || recordingConfirmed !== undefined) {
-        if (!medicalPdfShared || !medicalConditionsExplained || !recordingConfirmed || !recordingUrl) {
-          return res.status(400).json({
-            success: false,
-            message: 'FRD Section 4 & 8 Compliance Error: Medical Confirmation PDF must be shared, conditions accepted, and call audio recording attached before forwarding to Pre-Viva.'
-          });
-        }
+    // ─── 3. Handle "Proceed to Advance" (Confirmation Flow) ────────────────────
+    if (isConfirmed || outcome === 'PROCEED_ADVANCE') {
+      if (!cleanRecording) {
+        return res.status(400).json({
+          success: false,
+          message: 'Medical Confirmation Call Audio Recording is mandatory before forwarding to Advance Collection.'
+        });
+      }
+      if (medicalConditionsExplained === false) {
+        return res.status(400).json({
+          success: false,
+          message: 'Medical Conditions must be explained and accepted by client before proceeding.'
+        });
       }
 
       lead.locationConfirmation.isConfirmed = true;
       if (medicalPdfShared !== undefined) lead.locationConfirmation.medicalPdfShared = Boolean(medicalPdfShared);
-      if (medicalConditionsExplained !== undefined) lead.locationConfirmation.medicalConditionsExplained = Boolean(medicalConditionsExplained);
-      if (recordingConfirmed !== undefined) lead.locationConfirmation.recordingConfirmed = Boolean(recordingConfirmed);
-      if (recordingUrl !== undefined) lead.locationConfirmation.recordingUrl = recordingUrl;
+      lead.locationConfirmation.medicalConditionsExplained = true;
+      lead.locationConfirmation.recordingConfirmed = true;
+      lead.locationConfirmation.recordingUrl = cleanRecording;
       lead.locationConfirmation.confirmedAt = new Date();
+      lead.closureStatus = 'ACTIVE';
+      lead.isHold = false;
 
-      lead.currentStage = 'PRE_VISA';
+      // Moves to Advance Collection / Accounts stage
+      lead.currentStage = 'ACCOUNTS_COLLECTION';
       lead.fileType = 'MOVE_FILE';
 
       // Synchronize with 8 Mandatory Confirmations (DocType: MEDICAL_FITNESS_DECLARATION)
@@ -1137,9 +1227,9 @@ exports.updateLocationConfirmation = async (req, res) => {
         medConf.status = 'CLIENT_CONFIRMED';
         medConf.sharedChannel = 'WHATSAPP';
         medConf.confirmedAt = new Date();
-        if (recordingUrl) medConf.recordingUrl = recordingUrl;
+        medConf.recordingUrl = cleanRecording;
         medConf.recordingType = 'CALL_RECORDING';
-        medConf.remarks = 'Medical conditions explained, accepted, and call audio recording attached during After-Medical location confirmation.';
+        medConf.remarks = 'Medical conditions explained & accepted. Call recording attached during After-Medical confirmation.';
       } else {
         lead.confirmations.push({
           docType: 'MEDICAL_FITNESS_DECLARATION',
@@ -1147,19 +1237,19 @@ exports.updateLocationConfirmation = async (req, res) => {
           status: 'CLIENT_CONFIRMED',
           sharedChannel: 'WHATSAPP',
           confirmedAt: new Date(),
-          recordingUrl: recordingUrl || '',
+          recordingUrl: cleanRecording,
           recordingType: 'CALL_RECORDING',
-          remarks: 'Medical conditions explained, accepted, and call audio recording attached during After-Medical location confirmation.'
+          remarks: 'Medical conditions explained & accepted. Call recording attached during After-Medical confirmation.'
         });
       }
 
       await logLeadHistory({
         lead,
         performedBy: req.user,
-        actionType: 'STAGE_TRANSFERRED',
-        fromStage: lead.currentStage,
-        toStage: 'PRE_VISA',
-        remarks: `Location confirmed as "${lead.locationConfirmation.confirmedLocation}". Medical Confirmation PDF Shared & Call Recording Verified. File forwarded to Pre-Viva Manager as MOVE FILE.`
+        actionType: 'MEDICAL_CONFIRMATION_COMPLETED',
+        fromStage: 'MEDICAL_PROCESS',
+        toStage: 'ACCOUNTS_COLLECTION',
+        remarks: `Medical Confirmation completed (5-in-1 Dossier shared, medical conditions accepted, call recording attached: ${cleanRecording}). File forwarded to Advance Collection.`
       });
     } else {
       lead.locationConfirmation.editCount += 1;
