@@ -1309,7 +1309,11 @@ exports.getLeads = async (req, res) => {
         conditions.push({ currentStage: stage });
       }
     } else if (req.user.role === 'CALLING_STAFF') {
-      conditions.push({ assignedCallingStaff: req.user._id });
+      if (req.query.allPool === 'true') {
+        // Full company pool access for testing & shared operations
+      } else {
+        conditions.push({ assignedCallingStaff: req.user._id });
+      }
     } else if (req.user.role === 'ADMIN' || req.user.role === 'DATA_CONTROLLER') {
       // ADMIN & DATA_CONTROLLER have central pool access
       if (req.query.headQueue === 'true') {
