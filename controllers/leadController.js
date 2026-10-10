@@ -31,6 +31,22 @@ const generateLeadId = async () => {
   return `LEAD-${nextId}`;
 };
 
+// Robust helper: lookup lead by either MongoDB _id or custom leadId / candidateCode
+const findLeadByIdOrLeadId = async (id) => {
+  if (!id) return null;
+  let lead = null;
+  if (mongoose.Types.ObjectId.isValid(id)) {
+    lead = await Lead.findById(id);
+  }
+  if (!lead) {
+    lead = await Lead.findOne({ leadId: id });
+  }
+  if (!lead) {
+    lead = await Lead.findOne({ candidateCode: id });
+  }
+  return lead;
+};
+
 // @desc    Create / Ingest single lead or array of leads
 // @access  Allowed Roles: ADMIN, DATA_CONTROLLER, CALLING_STAFF, STAFF_HEAD
 // @route   POST /api/leads
@@ -1005,7 +1021,7 @@ exports.updateLocationConfirmation = async (req, res) => {
       recordingUrl,
       remarks
     } = req.body;
-    const lead = await Lead.findById(req.params.id);
+    const lead = await findLeadByIdOrLeadId(req.params.id);
 
     if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
@@ -3989,7 +4005,7 @@ exports.addBillBookCharge = async (req, res) => {
 exports.saveConfirmation = async (req, res) => {
   try {
     const { docType, title, status, sharedChannel, pdfUrl, recordingUrl, recordingType, remarks } = req.body;
-    const lead = await Lead.findById(req.params.id);
+    const lead = await findLeadByIdOrLeadId(req.params.id);
     if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
     if (!docType) {
@@ -4071,7 +4087,7 @@ exports.saveConfirmation = async (req, res) => {
 exports.closeLeadFile = async (req, res) => {
   try {
     const { closureType, reason, refundPayable } = req.body;
-    const lead = await Lead.findById(req.params.id);
+    const lead = await findLeadByIdOrLeadId(req.params.id);
     if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
     const validTypes = ['CLOSED_NO_ADVANCE', 'REFUND_PENDING', 'FINANCIAL_PENDING', 'FINAL_CLOSED'];
@@ -4362,7 +4378,7 @@ exports.reapplyCandidate = async (req, res) => {
 // @access  Private
 exports.getCandidateApplications = async (req, res) => {
   try {
-    const lead = await Lead.findById(req.params.id);
+    const lead = await findLeadByIdOrLeadId(req.params.id);
     if (!lead) {
       return res.status(404).json({ success: false, message: 'Candidate lead not found' });
     }
@@ -4519,7 +4535,7 @@ exports.rescheduleRefund = async (req, res) => {
       return res.status(400).json({ success: false, message: 'New scheduled date required' });
     }
 
-    const lead = await Lead.findById(req.params.id);
+    const lead = await findLeadByIdOrLeadId(req.params.id);
     if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
     const targetDate = new Date(newDate);
