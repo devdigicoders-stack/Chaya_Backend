@@ -3964,9 +3964,27 @@ const recalculateBillBookTotals = (lead) => {
   lead.paymentDetails.balanceDue = Math.max(0, (lead.paymentDetails.totalFee || totalApproved) - verifiedPayments);
 
   const verifiedAdvance = txs
-    .filter(t => t.head === 'ADVANCE' && t.status === 'VERIFIED' && t.type !== 'REFUND')
+    .filter(t => (t.head === 'ADVANCE' || t.type === 'ADVANCE') && t.status === 'VERIFIED' && t.type !== 'REFUND')
     .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
   lead.paymentDetails.advancePaid = verifiedAdvance;
+
+  const pendingAdvance = txs
+    .filter(t => (t.head === 'ADVANCE' || t.type === 'ADVANCE') && (t.status === 'PENDING_VERIFICATION' || t.status === 'PENDING' || !t.status) && t.type !== 'REFUND')
+    .reduce((sum, t) => sum + (Number(t.amount) || 0), 0);
+  lead.paymentDetails.pendingAdvance = pendingAdvance;
+  lead.paymentDetails.pendingVerification = pendingPayments;
+
+  if (pendingPayments > 0 && verifiedPayments === 0) {
+    lead.paymentDetails.verificationStatus = 'PENDING_VERIFICATION';
+  } else if (verifiedPayments > 0 && pendingPayments > 0) {
+    lead.paymentDetails.verificationStatus = 'PARTIALLY_VERIFIED';
+  } else if (verifiedPayments > 0 && pendingPayments === 0) {
+    lead.paymentDetails.verificationStatus = 'VERIFIED';
+  } else if (txs.some(t => t.status === 'REJECTED')) {
+    lead.paymentDetails.verificationStatus = 'REJECTED';
+  } else {
+    lead.paymentDetails.verificationStatus = 'UNPAID';
+  }
 
   lead.billBook.refundPaid = verifiedRefunds;
   lead.billBook.refundBalance = Math.max(0, (lead.billBook.approvedRefund || 0) - verifiedRefunds);
@@ -4076,26 +4094,25 @@ exports.addBillBookTransaction = async (req, res) => {
       lead.paymentDetails.afterAdvanceConfirmed = true;
       lead.paymentDetails.recordingConfirmed = true;
       lead.paymentDetails.recordingUrl = cleanRecording;
-      lead.paymentDetails.advancePaid = (lead.paymentDetails.advancePaid || 0) + numAmount;
-      lead.paymentDetails.totalPaid = (lead.paymentDetails.totalPaid || 0) + numAmount;
+      lead.paymentDetails.verificationStatus = initialStatus;
 
       // Synchronize in 8 Mandatory Confirmations (DocType: AFTER_ADVANCE_CONFIRMATION)
       if (!lead.confirmations) lead.confirmations = [];
       let advConf = lead.confirmations.find(c => c.docType === 'AFTER_ADVANCE_CONFIRMATION' || c.docType === 'ADVANCE_RECEIPT');
       if (advConf) {
-        advConf.status = 'CLIENT_CONFIRMED';
+        advConf.status = initialStatus === 'VERIFIED' ? 'CLIENT_CONFIRMED' : 'PENDING_VERIFICATION';
         advConf.confirmedAt = new Date();
         advConf.recordingUrl = cleanRecording;
-        advConf.remarks = `Advance payment of ₹${numAmount} received (${mode}). After Advance Confirmation PDF shared. Call recording attached.`;
+        advConf.remarks = `Advance payment of ₹${numAmount} logged (${mode}). Status: ${initialStatus}. After Advance Confirmation PDF shared. Call recording attached.`;
       } else {
         lead.confirmations.push({
           docType: 'AFTER_ADVANCE_CONFIRMATION',
           title: '5. After Advance Confirmation',
-          status: 'CLIENT_CONFIRMED',
+          status: initialStatus === 'VERIFIED' ? 'CLIENT_CONFIRMED' : 'PENDING_VERIFICATION',
           sharedChannel: 'WHATSAPP',
           confirmedAt: new Date(),
           recordingUrl: cleanRecording,
-          remarks: `Advance payment of ₹${numAmount} received (${mode}). After Advance Confirmation PDF shared. Call recording attached.`
+          remarks: `Advance payment of ₹${numAmount} logged (${mode}). Status: ${initialStatus}. After Advance Confirmation PDF shared. Call recording attached.`
         });
       }
     }
@@ -4142,6 +4159,17 @@ exports.verifyBillBookTransaction = async (req, res) => {
     // Recalculate totals now that this transaction is verified
     recalculateBillBookTotals(lead);
 
+    if (tx.head === 'ADVANCE' || tx.type === 'ADVANCE') {
+      lead.paymentDetails.verificationStatus = 'VERIFIED';
+      if (lead.confirmations) {
+        const conf = lead.confirmations.find(c => c.docType === 'AFTER_ADVANCE_CONFIRMATION' || c.docType === 'ADVANCE_RECEIPT');
+        if (conf) {
+          conf.status = 'CLIENT_CONFIRMED';
+          conf.remarks = `Advance receipt #${tx.receiptNo} of ₹${tx.amount} verified by Admin (${req.user.name}).`;
+        }
+      }
+    }
+
     await lead.save();
 
     await logLeadHistory({
@@ -4176,6 +4204,16 @@ exports.rejectBillBookTransaction = async (req, res) => {
 
     // Recalculate totals
     recalculateBillBookTotals(lead);
+
+    if (tx.head === 'ADVANCE' || tx.type === 'ADVANCE') {
+      if (lead.confirmations) {
+        const conf = lead.confirmations.find(c => c.docType === 'AFTER_ADVANCE_CONFIRMATION' || c.docType === 'ADVANCE_RECEIPT');
+        if (conf) {
+          conf.status = 'REJECTED';
+          conf.remarks = `Advance receipt #${tx.receiptNo} rejected by Admin (${req.user.name}). Reason: ${tx.rejectionReason}`;
+        }
+      }
+    }
 
     await lead.save();
 
