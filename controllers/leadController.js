@@ -2463,6 +2463,16 @@ exports.recordPaymentBooking = async (req, res) => {
         });
       }
 
+      // Step 7 Proposal / Agreement acceptance gate
+      const isAgreementAccepted = lead.companyConfirmation?.status === 'AGREEMENT_ACCEPTED' || 
+                                  lead.companyConfirmation?.clientAccepted === true;
+      if (!isAgreementAccepted) {
+        return res.status(400).json({
+          success: false,
+          message: 'Client dwara Step 7: Proposal / Agreement swikar (Accepted) kiye jane ke baad hi advance amount liya ja sakta hai! Uske pehle advance lena strictly prohibited hai.'
+        });
+      }
+
       if (!afterAdvanceConfirmed || !recordingConfirmed) {
         return res.status(400).json({
           success: false,
@@ -2480,6 +2490,26 @@ exports.recordPaymentBooking = async (req, res) => {
       lead.paymentDetails.afterAdvanceConfirmed = true;
       lead.paymentDetails.recordingConfirmed = true;
       lead.paymentDetails.recordingUrl = recordingUrl.toString().trim();
+      lead.currentStage = 'ACCOUNTS_COLLECTION';
+
+      // Synchronize Section 8 Confirmation Dossier
+      if (!lead.confirmations) lead.confirmations = [];
+      const confIdx = lead.confirmations.findIndex(c => c.docType === 'AFTER_ADVANCE_CONFIRMATION' || c.docType === 'COMPANY_SELECTION_OFFER');
+      const confPayload = {
+        docType: 'AFTER_ADVANCE_CONFIRMATION',
+        title: 'Step 8: After Advance Confirmation Dossier',
+        status: 'CLIENT_CONFIRMED',
+        sharedChannel: 'WHATSAPP',
+        recordingUrl: recordingUrl.toString().trim(),
+        recordingType: 'CALL_RECORDING',
+        remarks: 'Advance collected and conditions confirmed with client recording.',
+        confirmedAt: new Date()
+      };
+      if (confIdx >= 0) {
+        lead.confirmations[confIdx] = { ...(lead.confirmations[confIdx].toObject ? lead.confirmations[confIdx].toObject() : lead.confirmations[confIdx]), ...confPayload };
+      } else {
+        lead.confirmations.push(confPayload);
+      }
     }
 
     const totalCollected = sPaid + mPaid;
@@ -3947,8 +3977,23 @@ const recalculateBillBookTotals = (lead) => {
 // @access  Private
 exports.addBillBookTransaction = async (req, res) => {
   try {
-    const { type, head, amount, paymentMode, referenceNo, remarks, receiptUrl } = req.body;
-    const lead = await Lead.findById(req.params.id);
+    const { 
+      type, 
+      head, 
+      amount, 
+      paymentMode, 
+      paymentMethod,
+      referenceNo, 
+      remarks, 
+      receiptUrl,
+      afterAdvanceConfirmed,
+      recordingConfirmed,
+      recordingUrl,
+      advanceConditionsExplained,
+      processConditionsExplained
+    } = req.body;
+
+    const lead = await findLeadByIdOrLeadId(req.params.id);
     if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
     if (!lead.billBook) lead.billBook = {};
@@ -3964,51 +4009,58 @@ exports.addBillBookTransaction = async (req, res) => {
     }
 
     const isRefund = type === 'REFUND';
+    const isAdvance = (head === 'ADVANCE' || type === 'ADVANCE') && !isRefund;
     const prefix = isRefund ? 'REF' : 'REC';
     const receiptNo = `BB-${prefix}-${Math.floor(100000 + Math.random() * 900000)}`;
 
-    // Strict Business Rules: Medical Report PDF & Confirmation checks before Advance Payment
-    if ((head === 'ADVANCE' || type === 'ADVANCE') && !isRefund) {
-      const hasReport = Boolean(lead.medicalDetails?.reportUrl || lead.medicalDetails?.isReportSent);
-      if (!hasReport) {
+    const cleanRecording = (recordingUrl || '').toString().trim();
+
+    // ─── STEP 8 RULE 1: STRICT AGREEMENT ACCEPTANCE CHECK ─────────────────────
+    // "Client dwara proposal / agreement swikar hone kiye jane ke bad hi advance amount liya jayega, uske pahale nahi"
+    if (isAdvance) {
+      const isAgreementAccepted = lead.companyConfirmation?.status === 'AGREEMENT_ACCEPTED' || 
+                                  lead.companyConfirmation?.clientAccepted === true;
+      if (!isAgreementAccepted) {
         return res.status(400).json({
           success: false,
-          message: 'Medical Report PDF must be sent/uploaded to candidate before advance payment can be recorded in Bill Book!'
+          message: 'Client dwara Step 7: Proposal / Agreement swikar (Accepted) kiye jane ke baad hi advance payment liya ja sakta hai! Uske pehle advance lena strictly prohibited hai.'
         });
       }
 
-      if (!req.body.afterAdvanceConfirmed || !req.body.recordingConfirmed) {
+      // Step 8 Rule 3 & 4: Call recording mandatory when collecting advance
+      if (!cleanRecording) {
         return res.status(400).json({
           success: false,
-          message: "Both 'After Advance Confirmation' and 'Recording Confirmation' checkboxes must be ticked to save advance payment."
-        });
-      }
-
-      if (!req.body.recordingUrl || !req.body.recordingUrl.toString().trim()) {
-        return res.status(400).json({
-          success: false,
-          message: "Call recording audio file/URL is strictly required to save advance payment."
+          message: 'Advance एवं Process Conditions samjha kar Confirmation Call Recording audio URL surakshit karna aniwarya hai!'
         });
       }
     }
 
-    // ALL transactions entered by staff remain PENDING_VERIFICATION until Admin/Accounts verifies
+    const mode = paymentMode || paymentMethod || 'UPI';
+
+    // Transactions status: If entered by Admin/Accounts auto-verify, otherwise PENDING_VERIFICATION
+    const userRole = (req.user?.role || '').toUpperCase();
+    const isVerifier = ['ADMIN', 'ACCOUNTS', 'SUPER_ADMIN'].includes(userRole);
+    const initialStatus = isVerifier ? 'VERIFIED' : 'PENDING_VERIFICATION';
+
     const newTx = {
       receiptNo,
       type: type || 'PAYMENT',
       head: head || (isRefund ? 'REFUND' : 'ADVANCE'),
       amount: numAmount,
-      paymentMode: paymentMode || 'UPI',
+      paymentMode: mode,
       referenceNo: referenceNo || '',
-      status: 'PENDING_VERIFICATION',
+      status: initialStatus,
       receiptUrl: receiptUrl || '',
-      receivedBy: req.user.name,
-      verifiedBy: '',
-      verifiedAt: null,
+      receivedBy: req.user?.name || 'Staff',
+      verifiedBy: isVerifier ? (req.user?.name || 'Admin') : '',
+      verifiedAt: isVerifier ? new Date() : null,
       remarks: remarks || '',
-      afterAdvanceConfirmed: Boolean(req.body.afterAdvanceConfirmed),
-      recordingConfirmed: Boolean(req.body.recordingConfirmed),
-      recordingUrl: req.body.recordingUrl ? req.body.recordingUrl.toString().trim() : '',
+      afterAdvanceConfirmed: Boolean(afterAdvanceConfirmed),
+      recordingConfirmed: Boolean(recordingConfirmed || cleanRecording.isNotEmpty),
+      recordingUrl: cleanRecording,
+      advanceConditionsExplained: advanceConditionsExplained !== undefined ? Boolean(advanceConditionsExplained) : true,
+      processConditionsExplained: processConditionsExplained !== undefined ? Boolean(processConditionsExplained) : true,
       date: new Date()
     };
 
@@ -4017,16 +4069,52 @@ exports.addBillBookTransaction = async (req, res) => {
     // Recalculate totals strictly reflecting verified funds
     recalculateBillBookTotals(lead);
 
+    // If advance payment: update stage and confirmations
+    if (isAdvance) {
+      lead.currentStage = 'ACCOUNTS_COLLECTION';
+      if (!lead.paymentDetails) lead.paymentDetails = {};
+      lead.paymentDetails.afterAdvanceConfirmed = true;
+      lead.paymentDetails.recordingConfirmed = true;
+      lead.paymentDetails.recordingUrl = cleanRecording;
+      lead.paymentDetails.advancePaid = (lead.paymentDetails.advancePaid || 0) + numAmount;
+      lead.paymentDetails.totalPaid = (lead.paymentDetails.totalPaid || 0) + numAmount;
+
+      // Synchronize in 8 Mandatory Confirmations (DocType: AFTER_ADVANCE_CONFIRMATION)
+      if (!lead.confirmations) lead.confirmations = [];
+      let advConf = lead.confirmations.find(c => c.docType === 'AFTER_ADVANCE_CONFIRMATION' || c.docType === 'ADVANCE_RECEIPT');
+      if (advConf) {
+        advConf.status = 'CLIENT_CONFIRMED';
+        advConf.confirmedAt = new Date();
+        advConf.recordingUrl = cleanRecording;
+        advConf.remarks = `Advance payment of ₹${numAmount} received (${mode}). After Advance Confirmation PDF shared. Call recording attached.`;
+      } else {
+        lead.confirmations.push({
+          docType: 'AFTER_ADVANCE_CONFIRMATION',
+          title: '5. After Advance Confirmation',
+          status: 'CLIENT_CONFIRMED',
+          sharedChannel: 'WHATSAPP',
+          confirmedAt: new Date(),
+          recordingUrl: cleanRecording,
+          remarks: `Advance payment of ₹${numAmount} received (${mode}). After Advance Confirmation PDF shared. Call recording attached.`
+        });
+      }
+    }
+
     await lead.save();
 
     await logLeadHistory({
       lead,
       performedBy: req.user,
-      actionType: isRefund ? 'REFUND_RECORDED' : 'PAYMENT_RECORDED',
-      remarks: `${type || 'PAYMENT'} of ₹${numAmount} logged in Bill Book (${newTx.head}, Receipt: ${receiptNo}, Mode: ${newTx.paymentMode}, Ref: ${referenceNo || 'N/A'}). Status: PENDING ADMIN VERIFICATION. (Pending: ₹${lead.billBook.pendingVerification}, Verified: ₹${lead.billBook.totalReceived})`
+      actionType: isRefund ? 'REFUND_RECORDED' : (isAdvance ? 'ADVANCE_PAYMENT_COLLECTED' : 'PAYMENT_RECORDED'),
+      remarks: `${type || 'PAYMENT'} of ₹${numAmount} logged in Bill Book (${newTx.head}, Receipt: ${receiptNo}, Mode: ${newTx.paymentMode}, Ref: ${referenceNo || 'N/A'}). Status: ${initialStatus}. ${isAdvance ? `After Advance Confirmation PDF shared. Recording attached: ${cleanRecording}. File ready for Step 9: Staff Head Transfer.` : ''}`
     });
 
-    res.json({ success: true, message: `${type || 'Payment'} of ₹${numAmount} saved (Pending Admin Verification)`, data: lead.billBook });
+    res.json({ 
+      success: true, 
+      message: `${type || 'Payment'} of ₹${numAmount} saved in Bill Book successfully!`, 
+      data: lead.billBook,
+      receiptNo 
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
