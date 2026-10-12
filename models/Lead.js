@@ -32,6 +32,7 @@ const LeadSchema = new mongoose.Schema({
       'CALLING_SCREENING',
       'INITIAL_INTERVIEW',
       'MEDICAL_PROCESS',
+      'COMPANY_CONFIRMATION',
       'FINAL_INTERVIEW',
       'ACCOUNTS_COLLECTION',
       'STAFF_HEAD_HANDLING',
@@ -158,16 +159,39 @@ const LeadSchema = new mongoose.Schema({
     ]
   },
 
-  // Step 8: Company Confirmation & Proposal/Agreement (FRD Section 4, Step 8)
+  // Step 7: Company Confirmation & Proposal/Agreement (changes.PDF Step 7)
   companyConfirmation: {
-    status: { type: String, enum: ['PENDING', 'PROPOSAL_SENT', 'AGREEMENT_ACCEPTED', 'REJECTED'], default: 'PENDING' },
+    status: { 
+      type: String, 
+      enum: ['PENDING', 'SENT_TO_COMPANY', 'COMPANY_CONFIRMED', 'PROPOSAL_SENT', 'AGREEMENT_ACCEPTED', 'REJECTED'], 
+      default: 'PENDING' 
+    },
     companyName: { type: String, default: '' },
+    country: { type: String, default: '' },
+    city: { type: String, default: '' },
     positionOffered: { type: String, default: '' },
+    salary: { type: String, default: '' },
+    dutyHours: { type: String, default: '' },
+    contractDuration: { type: String, default: '2 Years Renewable' },
+    accommodation: { type: String, default: 'Company Provided' },
+    food: { type: String, default: 'Company Provided / Allowance' },
+    transport: { type: String, default: 'Company Provided' },
+    insurance: { type: String, default: 'Company Provided' },
+    jobConditions: { type: String, default: '' },
+    processConditions: { type: String, default: '' },
+    jobConditionsExplained: { type: Boolean, default: false },
+    processConditionsExplained: { type: Boolean, default: false },
+    clientAccepted: { type: Boolean, default: false },
+    proposalShared: { type: Boolean, default: false },
+    proposalSharedAt: { type: Date, default: null },
+    sentToCompanyAt: { type: Date, default: null },
+    companyConfirmedAt: { type: Date, default: null },
     proposalDate: { type: Date, default: null },
     acceptanceDate: { type: Date, default: null },
     terms: { type: String, default: '' },
     agreementPdfUrl: { type: String, default: '' },
     recordingUrl: { type: String, default: '' },
+    remarks: { type: String, default: '' },
     updatedAt: { type: Date, default: null }
   },
 

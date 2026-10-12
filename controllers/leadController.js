@@ -91,7 +91,7 @@ exports.createLeads = async (req, res) => {
       // Normalize currentStage safely
       const validStages = [
         'UNASSIGNED', 'CALLING_SCREENING', 'INITIAL_INTERVIEW', 'MEDICAL_PROCESS',
-        'FINAL_INTERVIEW', 'ACCOUNTS_COLLECTION', 'STAFF_HEAD_HANDLING',
+        'COMPANY_CONFIRMATION', 'FINAL_INTERVIEW', 'ACCOUNTS_COLLECTION', 'STAFF_HEAD_HANDLING',
         'VACANCY_MATCHING', 'PRE_VISA', 'VISA_PROCESSING', 'VIVA_PLACEMENT',
         'CANCELLED', 'REJECTED', 'COMPLETED'
       ];
@@ -969,6 +969,13 @@ exports.transferLeadStage = async (req, res) => {
         name: 'Staff Head Desk (Medical)',
         assignedAt: new Date()
       };
+    } else if (normalizedToStage === 'COMPANY_CONFIRMATION') {
+      if (!lead.companyConfirmation) lead.companyConfirmation = {};
+      if (!lead.companyConfirmation.status || lead.companyConfirmation.status === 'PENDING') {
+        lead.companyConfirmation.status = 'SENT_TO_COMPANY';
+        lead.companyConfirmation.sentToCompanyAt = new Date();
+      }
+      lead.companyConfirmation.updatedAt = new Date();
     }
 
     if (fileType) {
@@ -1232,9 +1239,21 @@ exports.updateLocationConfirmation = async (req, res) => {
       lead.closureStatus = 'ACTIVE';
       lead.isHold = false;
 
-      // Moves to Advance Collection / Accounts stage
-      lead.currentStage = 'ACCOUNTS_COLLECTION';
+      // Step 7 of changes.PDF: Candidate proceeds -> File sent for Company Confirmation
+      lead.currentStage = 'COMPANY_CONFIRMATION';
       lead.fileType = 'MOVE_FILE';
+
+      if (!lead.companyConfirmation) lead.companyConfirmation = {};
+      if (!lead.companyConfirmation.status || lead.companyConfirmation.status === 'PENDING') {
+        lead.companyConfirmation.status = 'SENT_TO_COMPANY';
+        lead.companyConfirmation.sentToCompanyAt = new Date();
+      }
+      if (!lead.companyConfirmation.positionOffered && lead.trade) {
+        lead.companyConfirmation.positionOffered = lead.trade;
+      }
+      if (!lead.companyConfirmation.country && lead.preferredCountry) {
+        lead.companyConfirmation.country = lead.preferredCountry;
+      }
 
       // Synchronize with 8 Mandatory Confirmations (DocType: MEDICAL_FITNESS_DECLARATION)
       if (!lead.confirmations) lead.confirmations = [];
@@ -1264,8 +1283,8 @@ exports.updateLocationConfirmation = async (req, res) => {
         performedBy: req.user,
         actionType: 'MEDICAL_CONFIRMATION_COMPLETED',
         fromStage: 'MEDICAL_PROCESS',
-        toStage: 'ACCOUNTS_COLLECTION',
-        remarks: `Medical Confirmation completed (5-in-1 Dossier shared, medical conditions accepted, call recording attached: ${cleanRecording}). File forwarded to Advance Collection.`
+        toStage: 'COMPANY_CONFIRMATION',
+        remarks: `Medical Confirmation completed (5-in-1 Dossier shared, medical conditions accepted, call recording attached: ${cleanRecording}). Candidate agreed to proceed; file sent for Step 7: Company Confirmation & Proposal.`
       });
     } else {
       lead.locationConfirmation.editCount += 1;
@@ -3718,40 +3737,159 @@ exports.getTransferOutbox = async (req, res) => {
   }
 };
 
-// ─── 2. STEP 8: COMPANY CONFIRMATION & PROPOSAL/AGREEMENT ─────────────────────
+// ─── 2. STEP 7: COMPANY CONFIRMATION & PROPOSAL/AGREEMENT (changes.PDF Step 7) ──
 // @desc    Update company proposal & agreement confirmation
 // @route   PUT /api/leads/:id/company-confirmation
 // @access  Private
 exports.updateCompanyConfirmation = async (req, res) => {
   try {
-    const { status, companyName, positionOffered, terms, agreementPdfUrl, recordingUrl } = req.body;
-    const lead = await Lead.findById(req.params.id);
+    const { 
+      status, 
+      companyName, 
+      country,
+      city,
+      positionOffered, 
+      salary,
+      dutyHours,
+      contractDuration,
+      accommodation,
+      food,
+      transport,
+      insurance,
+      jobConditions,
+      processConditions,
+      jobConditionsExplained,
+      processConditionsExplained,
+      clientAccepted,
+      proposalShared,
+      terms, 
+      agreementPdfUrl, 
+      recordingUrl,
+      remarks
+    } = req.body;
+
+    const lead = await findLeadByIdOrLeadId(req.params.id);
     if (!lead) return res.status(404).json({ success: false, message: 'Lead not found' });
 
     if (!lead.companyConfirmation) lead.companyConfirmation = {};
 
-    lead.companyConfirmation = {
-      status: status || lead.companyConfirmation.status || 'PROPOSAL_SENT',
-      companyName: companyName || lead.companyConfirmation.companyName || lead.country || '',
-      positionOffered: positionOffered || lead.companyConfirmation.positionOffered || lead.trade || '',
-      proposalDate: lead.companyConfirmation.proposalDate || new Date(),
-      acceptanceDate: status === 'AGREEMENT_ACCEPTED' ? new Date() : lead.companyConfirmation.acceptanceDate,
-      terms: terms || lead.companyConfirmation.terms || '',
-      agreementPdfUrl: agreementPdfUrl || lead.companyConfirmation.agreementPdfUrl || '',
-      recordingUrl: recordingUrl || lead.companyConfirmation.recordingUrl || '',
-      updatedAt: new Date()
-    };
+    const cleanRecording = (recordingUrl || lead.companyConfirmation.recordingUrl || '').trim();
+    const isAccepted = status === 'AGREEMENT_ACCEPTED' || clientAccepted === true;
 
+    // Strict validation: Recording mandatory if accepting proposal
+    if (isAccepted) {
+      if (!cleanRecording) {
+        return res.status(400).json({
+          success: false,
+          message: 'Client Call Confirmation Recording is MANDATORY when accepting Company Proposal / Agreement!'
+        });
+      }
+    }
+
+    // Populate / Update fields
+    if (companyName) lead.companyConfirmation.companyName = companyName;
+    if (country) lead.companyConfirmation.country = country;
+    if (city) lead.companyConfirmation.city = city;
+    if (positionOffered) lead.companyConfirmation.positionOffered = positionOffered;
+    if (salary) lead.companyConfirmation.salary = salary;
+    if (dutyHours) lead.companyConfirmation.dutyHours = dutyHours;
+    if (contractDuration) lead.companyConfirmation.contractDuration = contractDuration;
+    if (accommodation) lead.companyConfirmation.accommodation = accommodation;
+    if (food) lead.companyConfirmation.food = food;
+    if (transport) lead.companyConfirmation.transport = transport;
+    if (insurance) lead.companyConfirmation.insurance = insurance;
+    if (jobConditions) lead.companyConfirmation.jobConditions = jobConditions;
+    if (processConditions) lead.companyConfirmation.processConditions = processConditions;
+    if (terms) lead.companyConfirmation.terms = terms;
+    if (agreementPdfUrl) lead.companyConfirmation.agreementPdfUrl = agreementPdfUrl;
+    if (cleanRecording) lead.companyConfirmation.recordingUrl = cleanRecording;
+    if (jobConditionsExplained !== undefined) lead.companyConfirmation.jobConditionsExplained = Boolean(jobConditionsExplained);
+    if (processConditionsExplained !== undefined) lead.companyConfirmation.processConditionsExplained = Boolean(processConditionsExplained);
+    if (proposalShared !== undefined) {
+      lead.companyConfirmation.proposalShared = Boolean(proposalShared);
+      if (proposalShared) lead.companyConfirmation.proposalSharedAt = new Date();
+    }
+    if (remarks) lead.companyConfirmation.remarks = remarks;
+
+    const prevStage = lead.currentStage;
+
+    if (isAccepted) {
+      lead.companyConfirmation.status = 'AGREEMENT_ACCEPTED';
+      lead.companyConfirmation.clientAccepted = true;
+      lead.companyConfirmation.acceptanceDate = new Date();
+      lead.companyConfirmation.proposalDate = lead.companyConfirmation.proposalDate || new Date();
+
+      // Forward to Step 8: Advance Collection!
+      lead.currentStage = 'ACCOUNTS_COLLECTION';
+
+      // Synchronize in 8 Mandatory confirmations (DocType: 'OFFER_LETTER' or 'PROPOSAL_AGREEMENT')
+      if (!lead.confirmations) lead.confirmations = [];
+      let propConf = lead.confirmations.find(c => c.docType === 'OFFER_LETTER' || c.docType === 'PROPOSAL_AGREEMENT');
+      if (propConf) {
+        propConf.status = 'CLIENT_CONFIRMED';
+        propConf.confirmedAt = new Date();
+        propConf.recordingUrl = cleanRecording;
+        propConf.recordingType = 'CALL_RECORDING';
+        propConf.remarks = `Proposal accepted for ${lead.companyConfirmation.companyName || 'Company'} (${lead.companyConfirmation.positionOffered || 'Position'}). Call recording attached.`;
+      } else {
+        lead.confirmations.push({
+          docType: 'OFFER_LETTER',
+          title: '4. Company Offer & Agreement',
+          status: 'CLIENT_CONFIRMED',
+          sharedChannel: 'WHATSAPP',
+          confirmedAt: new Date(),
+          recordingUrl: cleanRecording,
+          recordingType: 'CALL_RECORDING',
+          remarks: `Proposal accepted for ${lead.companyConfirmation.companyName || 'Company'} (${lead.companyConfirmation.positionOffered || 'Position'}). Call recording attached.`
+        });
+      }
+
+      await logLeadHistory({
+        lead,
+        performedBy: req.user,
+        actionType: 'AGREEMENT_ACCEPTED',
+        fromStage: prevStage,
+        toStage: 'ACCOUNTS_COLLECTION',
+        remarks: `Company Proposal / Agreement accepted by client for ${lead.companyConfirmation.companyName || 'Employer'} (${lead.companyConfirmation.positionOffered || 'Position'}). Job & process conditions explained. Call recording attached: ${cleanRecording}. File forwarded to Step 8: Advance Collection.`
+      });
+    } else if (status === 'REJECTED') {
+      lead.companyConfirmation.status = 'REJECTED';
+      lead.isHold = true;
+      lead.holdReason = remarks || 'Client rejected company proposal and conditions.';
+      await logLeadHistory({
+        lead,
+        performedBy: req.user,
+        actionType: 'PROPOSAL_REJECTED',
+        remarks: `Client rejected company proposal for ${lead.companyConfirmation.companyName || 'Company'}. Reason: ${lead.holdReason}`
+      });
+    } else {
+      lead.companyConfirmation.status = status || lead.companyConfirmation.status || 'COMPANY_CONFIRMED';
+      if (status === 'COMPANY_CONFIRMED') {
+        lead.companyConfirmation.companyConfirmedAt = new Date();
+      } else if (status === 'PROPOSAL_SENT') {
+        lead.companyConfirmation.proposalDate = new Date();
+        lead.companyConfirmation.proposalShared = true;
+        lead.companyConfirmation.proposalSharedAt = new Date();
+      }
+
+      await logLeadHistory({
+        lead,
+        performedBy: req.user,
+        actionType: 'COMPANY_CONFIRMATION_UPDATED',
+        remarks: `Company confirmation status updated to ${lead.companyConfirmation.status} for ${lead.companyConfirmation.companyName || 'Company'}`
+      });
+    }
+
+    lead.companyConfirmation.updatedAt = new Date();
     await lead.save();
 
-    await logLeadHistory({
-      lead,
-      performedBy: req.user,
-      actionType: 'COMPANY_CONFIRMATION_UPDATED',
-      remarks: `Company proposal/agreement for ${lead.candidateName} updated: ${status || 'PENDING'} (${companyName || 'Company'})`
+    res.json({
+      success: true,
+      message: isAccepted
+        ? 'Proposal accepted by client and file forwarded to Step 8: Advance Collection!'
+        : `Company confirmation updated (${lead.companyConfirmation.status})`,
+      data: lead
     });
-
-    res.json({ success: true, message: 'Company confirmation updated', data: lead });
   } catch (error) {
     res.status(500).json({ success: false, message: error.message });
   }
