@@ -24,7 +24,15 @@ const UserSchema = new mongoose.Schema({
   avatar: { type: String, default: '' },
   department: { type: String, default: 'System Administration' },
   teamHeadId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
-  isActive: { type: Boolean, default: true }
+  isActive: { type: Boolean, default: true },
+  monthlyTargets: {
+    month: { type: String, default: '' }, // e.g. '2026-10'
+    medicalsTarget: { type: Number, default: 0 },
+    advancesTarget: { type: Number, default: 0 },
+    movedFilesTarget: { type: Number, default: 0 },
+    updatedAt: { type: Date, default: Date.now },
+    assignedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
+  }
 }, { timestamps: true });
 
 // Password is kept readable as requested by Admin

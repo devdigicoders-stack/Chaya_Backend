@@ -43,6 +43,9 @@ const {
   requestTransfer,
   acceptTransfer,
   returnTransfer,
+  cancelTransfer,
+  initiateStaffHeadTransfer,
+  confirmReceivingTransfer,
   getTransferInbox,
   getTransferOutbox,
   updateCompanyConfirmation,
@@ -58,7 +61,9 @@ const {
   cancelOrHoldLead,
   getRefundCalendar,
   rescheduleRefund,
-  markRefunded
+  markRefunded,
+  getCallingPipelineSummary,
+  getStaffHeadSummary
 } = require('../controllers/leadController');
 const { protect, authorize } = require('../middleware/authMiddleware');
 const validateTransferChecklist = require('../middleware/checkTransferChecklist');
@@ -66,6 +71,8 @@ const documentUpload = require('../middleware/documentUploadMiddleware');
 
 // 1. Core Lead Retrieval & Stats
 router.get('/', protect, getLeads);
+router.get('/calling/pipeline-summary', protect, getCallingPipelineSummary);
+router.get('/staff-head/summary', protect, authorize('STAFF_HEAD', 'ADMIN', 'SUPER_ADMIN'), getStaffHeadSummary);
 router.get('/admin/dashboard-summary', protect, authorize('ADMIN', 'DATA_CONTROLLER', 'STAFF_HEAD'), getAdminDashboardSummary);
 router.get('/transfers/inbox', protect, getTransferInbox);
 router.get('/transfers/outbox', protect, getTransferOutbox);
@@ -122,6 +129,9 @@ router.put('/:id/placement-deployment', protect, updatePlacementDeployment);
 router.post('/:id/request-transfer', protect, requestTransfer);
 router.post('/:id/accept-transfer', protect, acceptTransfer);
 router.post('/:id/return-transfer', protect, returnTransfer);
+router.post('/:id/cancel-transfer', protect, cancelTransfer);
+router.post('/:id/staff-head-transfer', protect, initiateStaffHeadTransfer);
+router.post('/:id/confirm-receiving', protect, confirmReceivingTransfer);
 
 // 9. Step 8 Company Confirmation & Proposal/Agreement (FRD Section 4, Step 8)
 router.put('/:id/company-confirmation', protect, updateCompanyConfirmation);

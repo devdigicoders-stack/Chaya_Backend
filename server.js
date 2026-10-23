@@ -13,7 +13,12 @@ connectDB();
 const app = express();
 
 // Middleware
-app.use(cors());
+app.use(cors({
+  origin: true,
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -25,6 +30,7 @@ app.use('/api/auth', require('./routes/authRoutes'));
 app.use('/api/leads', require('./routes/leadRoutes'));
 app.use('/api/checklists', require('./routes/checklistRoutes'));
 app.use('/api/history', require('./routes/historyRoutes'));
+app.use('/api/enquiries', require('./routes/enquiryRoutes'));
 
 // Root Health Check Route
 app.get('/', (req, res) => {

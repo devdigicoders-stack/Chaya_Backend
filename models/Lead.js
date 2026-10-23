@@ -20,6 +20,8 @@ const LeadSchema = new mongoose.Schema({
     enum: ['YES', 'NO', 'NOT_CONFIRMED', 'NOT_INTERESTED'], 
     default: 'NOT_CONFIRMED' 
   },
+  followUpDate: { type: Date, default: null },
+  followUpRemarks: { type: String, default: '' },
   isFormFilled: { type: Boolean, default: false },
   formFilledAt: { type: Date, default: null },
   applicationForm: { type: mongoose.Schema.Types.Mixed, default: null },
@@ -66,6 +68,32 @@ const LeadSchema = new mongoose.Schema({
     pendingTasks: { type: String, default: '' },
     requestedAt: { type: Date, default: null },
     status: { type: String, enum: ['NONE', 'PENDING', 'ACCEPTED', 'RETURNED'], default: 'NONE' },
+    returnReason: { type: String, default: '' }
+  },
+  // Step 9: Staff Head File Transfer & Receiving Confirmation Protocol
+  fileTransferDetails: {
+    status: {
+      type: String,
+      enum: ['NOT_INITIATED', 'PENDING_RECEIVING', 'RECEIVED_AND_CONFIRMED', 'RETURNED'],
+      default: 'NOT_INITIATED'
+    },
+    transferredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    transferredByName: { type: String, default: '' },
+    transferredTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    transferredToName: { type: String, default: '' },
+    targetDepartment: { type: String, default: 'VISA_PROCESSING' },
+    staffHeadInstructions: { type: String, default: '' },
+    transferredAt: { type: Date, default: null },
+    clientContacted: { type: Boolean, default: false },
+    clientContactedAt: { type: Date, default: null },
+    receivingPdfShared: { type: Boolean, default: false },
+    receivingPdfSharedAt: { type: Date, default: null },
+    receivingPdfUrl: { type: String, default: '' },
+    recordingConfirmed: { type: Boolean, default: false },
+    recordingUrl: { type: String, default: '' },
+    receivedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    receivedByName: { type: String, default: '' },
+    receivedAt: { type: Date, default: null },
     returnReason: { type: String, default: '' }
   },
   closureStatus: {

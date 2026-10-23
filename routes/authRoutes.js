@@ -15,7 +15,8 @@ const {
   getLoginHistory,
   terminateSession,
   terminateStaleSessions,
-  getPublicRoles
+  getPublicRoles,
+  updateUserTargets
 } = require('../controllers/authController');
 const { protect, authorize } = require('../middleware/authMiddleware');
 const upload = require('../middleware/uploadMiddleware');
@@ -38,6 +39,7 @@ router.post('/login-history/terminate-stale', protect, authorize('ADMIN'), termi
 router.post('/register', protect, authorize('ADMIN'), upload.single('avatar'), registerUser);
 router.get('/users', protect, authorize('ADMIN', 'STAFF_HEAD', 'DATA_CONTROLLER'), getAllUsers);
 router.put('/users/:id', protect, authorize('ADMIN'), upload.single('avatar'), updateUser);
+router.put('/users/:id/targets', protect, authorize('ADMIN', 'STAFF_HEAD'), updateUserTargets);
 router.put('/users/:id/toggle-status', protect, authorize('ADMIN'), toggleUserStatus);
 router.delete('/users/:id', protect, authorize('ADMIN'), deleteUser);
 

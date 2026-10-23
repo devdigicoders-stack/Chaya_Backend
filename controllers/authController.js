@@ -716,4 +716,51 @@ exports.getPublicRoles = async (req, res) => {
   }
 };
 
+// @desc    Update Staff Monthly Targets (Admin & Staff Head only)
+// @route   PUT /api/auth/users/:id/targets
+// @access  Private (ADMIN, STAFF_HEAD)
+exports.updateUserTargets = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { month, medicalsTarget, advancesTarget, movedFilesTarget } = req.body;
+
+    const user = await User.findById(id);
+    if (!user) {
+      return res.status(404).json({ success: false, message: 'User not found' });
+    }
+
+    // Staff Head can only set targets for their assigned calling staff
+    if (req.user.role === 'STAFF_HEAD') {
+      if (user.role !== 'CALLING_STAFF') {
+        return res.status(403).json({ success: false, message: 'Staff Head can only assign targets to Calling Staff' });
+      }
+      if (user.teamHeadId && user.teamHeadId.toString() !== req.user._id.toString()) {
+        return res.status(403).json({ success: false, message: 'You can only assign targets to your team members' });
+      }
+    }
+
+    const targetMonth = month || new Date().toISOString().substring(0, 7);
+
+    user.monthlyTargets = {
+      month: targetMonth,
+      medicalsTarget: Number(medicalsTarget) || 0,
+      advancesTarget: Number(advancesTarget) || 0,
+      movedFilesTarget: Number(movedFilesTarget) || 0,
+      updatedAt: new Date(),
+      assignedBy: req.user._id
+    };
+
+    await user.save();
+
+    res.json({
+      success: true,
+      message: `Monthly targets for ${user.name} updated successfully for ${targetMonth}`,
+      data: user.monthlyTargets
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+
 
