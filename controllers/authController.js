@@ -722,7 +722,16 @@ exports.getPublicRoles = async (req, res) => {
 exports.updateUserTargets = async (req, res) => {
   try {
     const { id } = req.params;
-    const { month, medicalsTarget, advancesTarget, movedFilesTarget } = req.body;
+    const { 
+      month, 
+      medicalsTarget, 
+      advancesTarget, 
+      movedFilesTarget,
+      leadIntakeTarget,
+      interviewsTarget,
+      visasTarget,
+      customTarget
+    } = req.body;
 
     const user = await User.findById(id);
     if (!user) {
@@ -746,6 +755,10 @@ exports.updateUserTargets = async (req, res) => {
       medicalsTarget: Number(medicalsTarget) || 0,
       advancesTarget: Number(advancesTarget) || 0,
       movedFilesTarget: Number(movedFilesTarget) || 0,
+      leadIntakeTarget: Number(leadIntakeTarget) || 0,
+      interviewsTarget: Number(interviewsTarget) || 0,
+      visasTarget: Number(visasTarget) || 0,
+      customTarget: Number(customTarget) || 0,
       updatedAt: new Date(),
       assignedBy: req.user._id
     };

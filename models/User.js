@@ -30,6 +30,10 @@ const UserSchema = new mongoose.Schema({
     medicalsTarget: { type: Number, default: 0 },
     advancesTarget: { type: Number, default: 0 },
     movedFilesTarget: { type: Number, default: 0 },
+    leadIntakeTarget: { type: Number, default: 0 },
+    interviewsTarget: { type: Number, default: 0 },
+    visasTarget: { type: Number, default: 0 },
+    customTarget: { type: Number, default: 0 },
     updatedAt: { type: Date, default: Date.now },
     assignedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }
   }

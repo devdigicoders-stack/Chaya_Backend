@@ -25,6 +25,12 @@ const LeadSchema = new mongoose.Schema({
   isFormFilled: { type: Boolean, default: false },
   formFilledAt: { type: Date, default: null },
   applicationForm: { type: mongoose.Schema.Types.Mixed, default: null },
+
+  // Creator Attribution & Staff Head Ownership
+  createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+  createdByName: { type: String, default: '' },
+  createdByRole: { type: String, default: 'STAFF' },
+  isStaffHeadDirectLead: { type: Boolean, default: false },
   
   // Current Workflow Stage
   currentStage: {

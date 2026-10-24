@@ -65,7 +65,8 @@ const {
   getCallingPipelineSummary,
   getStaffHeadSummary,
   getDataControllerSummary,
-  getPriVisaManagerSummary
+  getPriVisaManagerSummary,
+  getVisaManagerSummary
 } = require('../controllers/leadController');
 const { protect, authorize } = require('../middleware/authMiddleware');
 const validateTransferChecklist = require('../middleware/checkTransferChecklist');
@@ -77,6 +78,7 @@ router.get('/calling/pipeline-summary', protect, getCallingPipelineSummary);
 router.get('/staff-head/summary', protect, authorize('STAFF_HEAD', 'ADMIN', 'SUPER_ADMIN'), getStaffHeadSummary);
 router.get('/data-controller/summary', protect, authorize('DATA_CONTROLLER', 'ADMIN', 'SUPER_ADMIN'), getDataControllerSummary);
 router.get('/pri-visa/summary', protect, authorize('PRE_VISA_MANAGER', 'ADMIN', 'SUPER_ADMIN'), getPriVisaManagerSummary);
+router.get('/visa-manager/summary', protect, authorize('VISA_MANAGER', 'ADMIN', 'SUPER_ADMIN'), getVisaManagerSummary);
 router.get('/admin/dashboard-summary', protect, authorize('ADMIN', 'DATA_CONTROLLER', 'STAFF_HEAD'), getAdminDashboardSummary);
 router.get('/transfers/inbox', protect, getTransferInbox);
 router.get('/transfers/outbox', protect, getTransferOutbox);
