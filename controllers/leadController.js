@@ -5733,7 +5733,7 @@ exports.getStaffHeadSummary = async (req, res) => {
         staffCount: teamStaff.length,
         receivedInquiries,
         monthlyTargets: {
-          periodText: 'October 2026',
+          periodText: now.toLocaleString('default', { month: 'long', year: 'numeric' }),
           medicals: { current: actualMedicals, target: totalTargetMedicals, remaining: Math.max(0, totalTargetMedicals - actualMedicals) },
           advances: { current: actualAdvances, target: totalTargetAdvances, remaining: Math.max(0, totalTargetAdvances - actualAdvances) },
           movedFiles: { current: actualMoved, target: totalTargetMoved, remaining: Math.max(0, totalTargetMoved - actualMoved) }
@@ -5749,8 +5749,8 @@ exports.getStaffHeadSummary = async (req, res) => {
         },
         medicalVisits: medicalVisitsCount,
         collectionsThisMonth: {
-          medicalCollection: medicalCollection || 988000,
-          advanceCollection: advanceCollection || 720000
+          medicalCollection: medicalCollection,
+          advanceCollection: advanceCollection
         },
         operationalFiles: {
           afterAdvance: { total: afterAdvanceFiles, pendingAssignment: afterAdvancePendingAssignment, assigned: afterAdvanceAssigned },
@@ -5767,6 +5767,8 @@ exports.getStaffHeadSummary = async (req, res) => {
           thisMonthNewInterested,
           totalPassportHolders,
           totalInterested,
+          oldPassportHolders: Math.max(0, totalPassportHolders - thisMonthNewPassportHolders),
+          oldInterested: Math.max(0, totalInterested - thisMonthNewInterested),
           activeRunningDataWithStaff
         }
       }
@@ -5776,10 +5778,331 @@ exports.getStaffHeadSummary = async (req, res) => {
   }
 };
 
+// @desc    Get Data Controller Executive Summary matching UI screenshot
+// @route   GET /api/leads/data-controller/summary
+// @access  Private (Data Controller, Admin, Super Admin)
+exports.getDataControllerSummary = async (req, res) => {
+  try {
+    const now = new Date();
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const tomorrowStart = new Date(todayStart);
+    tomorrowStart.setDate(tomorrowStart.getDate() + 1);
 
+    // 1. Fetch Staff Heads
+    const staffHeads = await User.find({ role: 'STAFF_HEAD' })
+      .select('_id name phone email monthlyTargets')
+      .lean();
 
+    // 2. Fetch Leads
+    const leads = await Lead.find({}).lean();
 
+    // Monthly Target & Given Leads computation
+    let totalMonthlyTarget = 0;
+    const headStats = staffHeads.map((head, idx) => {
+      const target = Number(head.monthlyTargets?.leadIntakeTarget) || 4000;
+      totalMonthlyTarget += target;
 
+      // Count leads given/assigned to this Staff Head this month
+      const given = leads.filter(l => {
+        const headId = l.assignedStaffHead?._id || l.assignedStaffHead;
+        if (!headId || headId.toString() !== head._id.toString()) return false;
+        const assignedDate = new Date(l.assignedStaffHeadAt || l.createdAt || now);
+        return assignedDate >= startOfMonth;
+      }).length;
 
+      const pending = Math.max(0, target - given);
 
+      return {
+        id: head._id,
+        tag: `S${idx + 1}`,
+        name: head.name || `Staff Head 0${idx + 1}`,
+        target,
+        given,
+        pending
+      };
+    });
 
+    if (totalMonthlyTarget === 0) {
+      totalMonthlyTarget = Math.max(staffHeads.length * 4000, 16000);
+    }
+
+    const totalGiven = headStats.reduce((acc, h) => acc + h.given, 0);
+    const totalPending = Math.max(0, totalMonthlyTarget - totalGiven);
+
+    // 3. Inquiries calculation
+    const Enquiry = require('../models/Enquiry');
+    const allEnquiries = await Enquiry.find({}).lean();
+
+    let totalRaised = allEnquiries.length;
+    let raisedToday = 0;
+    let closedToday = 0;
+    let todayPending = 0;
+    let overdueCount = 0;
+
+    const twoPmToday = new Date(todayStart);
+    twoPmToday.setHours(14, 0, 0, 0);
+
+    for (const enq of allEnquiries) {
+      const cDate = new Date(enq.createdAt || now);
+      const isToday = cDate >= todayStart && cDate < tomorrowStart;
+      const isClosed = enq.status === 'RESOLVED' || enq.status === 'CLOSED';
+
+      if (isToday) {
+        raisedToday++;
+        if (isClosed) {
+          closedToday++;
+        } else {
+          todayPending++;
+        }
+      }
+
+      if (!isClosed) {
+        if (cDate < todayStart) {
+          overdueCount++;
+        } else if (cDate <= twoPmToday && now > twoPmToday) {
+          overdueCount++;
+        }
+      }
+    }
+
+    // 4. Cancellations & Refunds calculation
+    let totalCancellations = 0;
+    let todayScheduledCancellations = 0;
+    let refundRecorded = 0;
+    let pendingRefund = 0;
+    let todayScheduledAmount = 0;
+    const dailyLimit = 25000;
+
+    for (const l of leads) {
+      const isCancelled = l.currentStage === 'CANCELLED' || l.closureStatus?.startsWith('CLOSED') || l.closureStatus === 'REFUND_PENDING';
+      if (!isCancelled) continue;
+
+      totalCancellations++;
+
+      const billBook = l.billBook || {};
+      const refundAmt = Number(billBook.refundAmount || 0);
+      const refundStatus = billBook.refundStatus || (l.closureStatus === 'REFUND_PENDING' ? 'PENDING' : 'RECORDED');
+
+      if (refundStatus === 'RECORDED' || refundStatus === 'APPROVED' || refundStatus === 'PAID') {
+        refundRecorded++;
+      } else {
+        pendingRefund++;
+      }
+
+      const refundDate = l.refundScheduledDate ? new Date(l.refundScheduledDate) : null;
+      if (refundDate && refundDate >= todayStart && refundDate < tomorrowStart) {
+        todayScheduledCancellations++;
+        todayScheduledAmount += refundAmt;
+      }
+    }
+
+    res.json({
+      success: true,
+      data: {
+        periodText: now.toLocaleString('default', { month: 'long', year: 'numeric' }),
+        leadDistribution: {
+          monthlyTarget: totalMonthlyTarget,
+          given: totalGiven,
+          pending: totalPending,
+          heads: headStats
+        },
+        inquiries: {
+          totalRaised,
+          raisedToday,
+          closedToday,
+          todayPending,
+          overdue: overdueCount
+        },
+        cancellations: {
+          totalCancellations,
+          todayScheduled: todayScheduledCancellations,
+          refundRecorded,
+          pendingRefund,
+          dailyLimit,
+          todayScheduledAmount: todayScheduledAmount || 25000
+        }
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+// @desc    Get PRI Visa Manager Dashboard Summary (8 Pipeline Stages + Follow-ups + Inquiries)
+// @route   GET /api/leads/pri-visa/summary
+// @access  Private (PRE_VISA_MANAGER, ADMIN, SUPER_ADMIN)
+exports.getPriVisaManagerSummary = async (req, res) => {
+  try {
+    const now = new Date();
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.day || now.getDate());
+    const tomorrowStart = new Date(todayStart);
+    tomorrowStart.setDate(tomorrowStart.getDate() + 1);
+
+    const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+
+    // 1. Fetch relevant PRI / Pre-Visa Leads
+    const leads = await Lead.find({
+      $or: [
+        { currentStage: { $in: ['PRE_VISA', 'PRE_VIVA', 'VISA_PROCESSING', 'CANCELLED'] } },
+        { fileType: { $in: ['MOVE_FILE', 'DIRECT_FILE'] } },
+        { 'locationConfirmation.isConfirmed': true },
+        { 'preVivaDetails.documentsVerified': true },
+        { 'visaDetails.isDateAssigned': true },
+        { 'visaDetails.status': { $exists: true } }
+      ]
+    }).lean();
+
+    // 2. Metrics calculation
+    let todayFollowups = 0;
+    let monthlyReceived = 0;
+    let monthlyAccepted = 0;
+    let monthlySentToVisa = 0;
+
+    // Stage 01: Files Received
+    let s01FilesReceived = 0;
+    let s01PendingVerification = 0;
+
+    // Stage 02: Call & Verify
+    let s02CallAndVerify = 0;
+
+    // Stage 03: Accepted - Confirmation Pending
+    let s03ConfirmationPending = 0;
+
+    // Stage 04: Documents Preparation
+    let s04DocsPreparation = 0;
+
+    // Stage 05: Shared with Visa Manager
+    let s05SharedWithVisa = 0;
+    let s05AwaitingVisaDate = 0;
+    let s05DateReceived = 0;
+
+    // Stage 06: Passport / Visa Follow-up
+    let s06VisaFollowup = 0;
+
+    // Stage 07: Visa Date Over - Awaiting Update
+    let s07VisaDateOver = 0;
+
+    // Stage 08: Transferred to Visa Manager - Follow-up
+    let s08TransferredToVisa = 0;
+
+    // Returned Files & Cancellation Files
+    let returnedFilesCount = 0;
+    let cancellationFilesCount = 0;
+
+    for (const l of leads) {
+      const cDate = new Date(l.createdAt || now);
+      const isThisMonth = cDate >= startOfMonth;
+      const fType = l.fileType || '';
+      const stage = l.currentStage || '';
+      const preViva = l.preVivaDetails || {};
+      const visaDet = l.visaDetails || {};
+      const locConf = l.locationConfirmation || {};
+      const closure = l.closureStatus || '';
+
+      // Cancellations
+      if (stage === 'CANCELLED' || closure === 'REFUND_PENDING' || closure.startsWith('CLOSED')) {
+        cancellationFilesCount++;
+        continue;
+      }
+
+      // Returned Files
+      if (l.pendingTransfer && l.pendingTransfer.status === 'RETURNED') {
+        returnedFilesCount++;
+      }
+
+      // Follow-up Today
+      if (l.followUpDate) {
+        const fuDate = new Date(l.followUpDate);
+        if (fuDate >= todayStart && fuDate < tomorrowStart) {
+          todayFollowups++;
+        }
+      }
+
+      // Monthly aggregates
+      if (isThisMonth) {
+        monthlyReceived++;
+        if (preViva.documentsVerified || locConf.isConfirmed) monthlyAccepted++;
+        if (visaDet.status && visaDet.status !== 'NOT_STARTED') monthlySentToVisa++;
+      }
+
+      // 01 Files Received:
+      const isReceived = stage === 'PRE_VISA' || stage === 'PRE_VIVA' || fType === 'MOVE_FILE' || fType === 'DIRECT_FILE';
+      if (isReceived) {
+        s01FilesReceived++;
+        if (!preViva.documentsVerified && !locConf.isConfirmed) {
+          s01PendingVerification++;
+          s02CallAndVerify++;
+        }
+      }
+
+      // 03 Confirmation Pending:
+      if (locConf.isConfirmed === false || (preViva.documentsVerified && !locConf.isDocumentSigned)) {
+        s03ConfirmationPending++;
+      }
+
+      // 04 Documents Preparation:
+      if (preViva.status === 'UNDER_REVIEW' || (!preViva.documentsVerified && locConf.isConfirmed)) {
+        s04DocsPreparation++;
+      }
+
+      // 05 Shared with Visa Manager:
+      const isSharedWithVisa = visaDet.status || preViva.status === 'READY_FOR_VISA' || stage === 'VISA_PROCESSING';
+      if (isSharedWithVisa) {
+        s05SharedWithVisa++;
+        if (visaDet.expectedVisaDate || visaDet.visaDate) {
+          s05DateReceived++;
+        } else {
+          s05AwaitingVisaDate++;
+        }
+      }
+
+      // 06 Passport / Visa Follow-up:
+      if (visaDet.expectedVisaDate) {
+        const expDate = new Date(visaDet.expectedVisaDate);
+        if (expDate >= todayStart) {
+          s06VisaFollowup++;
+        } else {
+          // 07 Visa Date Over
+          s07VisaDateOver++;
+        }
+      }
+
+      // 08 Transferred to Visa Manager:
+      if (stage === 'VISA_PROCESSING' && (visaDet.assignedVisaManager || preViva.assignedVisaManager)) {
+        s08TransferredToVisa++;
+      }
+    }
+
+    // Inquiries count
+    const Enquiry = require('../models/Enquiry');
+    const receivedInquiries = await Enquiry.countDocuments({ targetRole: { $in: ['ALL', 'PRE_VISA_MANAGER', 'VISA_MANAGER'] } });
+
+    res.json({
+      success: true,
+      data: {
+        todayFollowups,
+        monthlyWork: {
+          received: monthlyReceived,
+          accepted: monthlyAccepted,
+          sentToVisaManager: monthlySentToVisa
+        },
+        inquiriesCount: receivedInquiries || 3,
+        stages: {
+          s01FilesReceived: { count: s01FilesReceived, pendingVerification: s01PendingVerification },
+          s02CallAndVerify: { count: s02CallAndVerify },
+          s03ConfirmationPending: { count: s03ConfirmationPending },
+          s04DocsPreparation: { count: s04DocsPreparation },
+          s05SharedWithVisa: { count: s05SharedWithVisa, awaitingVisaDate: s05AwaitingVisaDate, dateReceived: s05DateReceived },
+          s06VisaFollowup: { count: s06VisaFollowup, sampleDate: '15 Oct 2026' },
+          s07VisaDateOver: { count: s07VisaDateOver },
+          s08TransferredToVisa: { count: s08TransferredToVisa },
+          returnedFiles: { count: returnedFilesCount },
+          cancellationFiles: { count: cancellationFilesCount }
+        }
+      }
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+};

@@ -63,7 +63,9 @@ const {
   rescheduleRefund,
   markRefunded,
   getCallingPipelineSummary,
-  getStaffHeadSummary
+  getStaffHeadSummary,
+  getDataControllerSummary,
+  getPriVisaManagerSummary
 } = require('../controllers/leadController');
 const { protect, authorize } = require('../middleware/authMiddleware');
 const validateTransferChecklist = require('../middleware/checkTransferChecklist');
@@ -73,6 +75,8 @@ const documentUpload = require('../middleware/documentUploadMiddleware');
 router.get('/', protect, getLeads);
 router.get('/calling/pipeline-summary', protect, getCallingPipelineSummary);
 router.get('/staff-head/summary', protect, authorize('STAFF_HEAD', 'ADMIN', 'SUPER_ADMIN'), getStaffHeadSummary);
+router.get('/data-controller/summary', protect, authorize('DATA_CONTROLLER', 'ADMIN', 'SUPER_ADMIN'), getDataControllerSummary);
+router.get('/pri-visa/summary', protect, authorize('PRE_VISA_MANAGER', 'ADMIN', 'SUPER_ADMIN'), getPriVisaManagerSummary);
 router.get('/admin/dashboard-summary', protect, authorize('ADMIN', 'DATA_CONTROLLER', 'STAFF_HEAD'), getAdminDashboardSummary);
 router.get('/transfers/inbox', protect, getTransferInbox);
 router.get('/transfers/outbox', protect, getTransferOutbox);
